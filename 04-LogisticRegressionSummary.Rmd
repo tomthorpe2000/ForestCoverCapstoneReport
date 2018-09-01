@@ -1,0 +1,1129 @@
+---
+title: "Capstone Project Logistic Regression"
+author: "Tom Thorpe"
+date: "August 15, 2018"
+output:
+  pdf_document: default
+  html_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Tree Coverage Logistic Regression Summary
+
+The results of the logistic regression for each of the tree types and initial and
+insignificant features removed was saved to a csv file. The logistic summary
+is read and some data rounded to the nearest percent.
+
+```{r "Read_Summary"}
+LogisticSummary=read.csv("ForestCoverLogisticStats.csv")
+
+LogisticSummary$Description<-as.character(LogisticSummary$Description)
+LogisticSummary$Selected<-as.character(LogisticSummary$Selected)
+
+# Add a row for the weighted average calculations
+LogisticSummary[nrow(LogisticSummary)+1,]<- list("Weighted Average",NA,NA,NA,
+                                            0,0,0,0,0,0,0,0,0,0,0,0,"")
+```
+
+```{r "Calc Summary Totals"}
+lastRow=nrow(LogisticSummary)
+testCount=LogisticSummary$Count[[1]]
+LogisticSummary$Count[[lastRow]] = testCount
+
+# Calculate weighted average for accuracy, sensitivity and specificity
+for (i in 1:(lastRow-1)) {
+  
+  # "X" in selected indicates the Logistic model for the current tree type
+  # The model was selected manually by updating the CSV file.
+  if(LogisticSummary$Selected[[i]]=="X") {
+    curNum = LogisticSummary$TP[[i]]+LogisticSummary$FN[[i]]
+    
+    LogisticSummary$Accuracy[[lastRow]] = LogisticSummary$Accuracy[[lastRow]] +   
+      LogisticSummary$Accuracy[[i]]*(curNum/testCount)
+    
+    LogisticSummary$Sensitivity[[lastRow]] = LogisticSummary$Sensitivity[[lastRow]] +  
+      LogisticSummary$Sensitivity[[i]]*(curNum/testCount)
+    
+    LogisticSummary$Specificity[[lastRow]] = LogisticSummary$Specificity[[lastRow]] +  
+      LogisticSummary$Specificity[[i]]*(curNum/testCount)
+  }
+}
+  
+```
+
+```{r "Clean Summary"}
+# Create a copy of the summary and drop columns not being displayed
+LogSummaryTable=LogisticSummary
+
+LogSummaryTable$TrueLabel=NULL
+LogSummaryTable$FalseLabel=NULL
+LogSummaryTable$BaselineLabel=NULL
+LogSummaryTable$AIC=NULL
+#LogSummaryTable$TP=NULL
+LogSummaryTable$TN=NULL
+LogSummaryTable$FP=NULL
+LogSummaryTable$FN=NULL
+LogSummaryTable$Count=NULL
+
+# Abbreviate columns names so each row is on one line when being displayed
+colnames(LogSummaryTable)<- c("Description", "BaseAcc", "Acc", "Sens", "Spec", "AUC",
+                              "Num", "Thresh","Select")
+
+LogSummaryTable$Num = LogSummaryTable$Num + LogisticSummary$FN # calculate number of trees
+LogSummaryTable$Num[[lastRow]] = testCount # Set the number in the weighted average row to number of test cases
+
+# Round data to nearest percent
+LogSummaryTable$BaseAcc = paste(as.integer(LogSummaryTable$BaseAcc*100),"%",sep="")
+LogSummaryTable$Acc = paste(as.integer(LogSummaryTable$Acc*100),"%",sep="")
+LogSummaryTable$Sens = paste(as.integer(LogSummaryTable$Sens*100),"%",sep="")
+LogSummaryTable$Spec = paste(as.integer(LogSummaryTable$Spec*100),"%",sep="")
+LogSummaryTable$AUC = paste(as.integer(LogSummaryTable$AUC),"%",sep="")
+
+LogSummaryTable$BaseAcc[[lastRow]]=""
+LogSummaryTable$AUC[[lastRow]]=""
+#LogSummaryTable$Thresh[[lastRow]]=""
+
+# Display the summary table
+LogSummaryTable
+```
+The Logistic Model selected used models that only kept significant variables
+since all the models using all the feature data had several coefficients
+that were in the millions or billions.
+
+The aggregated vs individualized model chosen was based on the best 
+sensitivity and specificity.
+
+The individuated data only provided better results in two of the seven tree types.
+
+## ROC of Selected Models
+
+Response Operating Characteristics are shown for the selected models.
+
+![Aspen ROC for Significant Individuated Data](Fig-ROC_perf_Aspen_Ind_Sig.jpg)
+
+The Aspen ROC is irregularly shaped and starts at 0.3
+
+![Cottonwood Willow ROC for Significant Aggregated Data](Fig-ROCR_perf_CotWil_Agg_Sig.jpg)
+
+![Douglas Fir ROC for Significant Aggregated Data](Fig-ROCR_perf_DougFir_Agg_Sig.jpg)
+
+
+![Krummholz ROC for Significant Aggregated Data](Fig-ROCR_perf_Krumm_Agg_Sig.jpg)
+
+
+![Lodgepole Pine ROC for Significant Aggregated Data](Fig-ROCR_perf_Lodge_Agg_Sig.jpg)
+
+
+![Ponderosa Pine ROC for Significant Individuated Data](Fig-ROCR_perf_Ponder_Agg_Sig.jpg)
+
+
+
+![Spruce and Fir ROC for All Aggregated Data](Fig-ROCR_perf_SprFir_Agg_Sig.jpg)
+
+
+The Lodgepole and Spruce/Fir, which represent over 84% of the population have the worst response curves. This is going to limit the accuracy of the overall predictions since they will
+carry more weight in the performance results.
+
+## Logistic Regression Model Summary
+
+All of the Logistic regression models were saved. 
+Look at Logistic Model for Ponderosa
+
+```{r "Ponderosa All Ind Logistic Model"}
+load("Ponder_Ind_All_LogMod.Rdata")
+
+summary(Ponder_Ind_All_LogMod)
+
+
+```
+
+## Load Data
+
+Load the tree coverage data set and split into training and testing sets
+so they match the training and testing sets used for creating the 
+logistic regression models.
+
+Add columns to calculate response probabilities for each logistic regression model.
+
+```{r "Load Cleaned Tree Data"}
+
+firstTime=TRUE
+set.seed(127)
+library(caTools) # needed for split function
+library(dplyr) # needed for mutate function
+
+if (firstTime) {
+  infile="C:/Users/Tom/git/datasciencefoundation/ForestCoverage/forestcover_clean_full.csv"
+ #infile="C:/Users/Tom/git/datasciencefoundation/ForestCoverage/forestcoversmall_clean_full.csv"
+  
+  forestcover <- read.csv(infile,header=TRUE,sep=",") 
+  
+  # Add columns for probabilities of each tree cover type
+  forestcover <- mutate(forestcover, AspenProb=0.0)
+  forestcover <- mutate(forestcover, CotWilProb=0.0)
+  forestcover <- mutate(forestcover, DougFirProb=0.0)
+  forestcover <- mutate(forestcover, KrummProb=0.0)
+  forestcover <- mutate(forestcover, LodgeProb=0.0)
+  forestcover <- mutate(forestcover, PonderProb=0.0)
+  forestcover <- mutate(forestcover, SprFirProb=0.0)
+  
+  # Add column to store the tree type predicted by the model.
+  # It will be compared to the CovName column to construct the confusion matrix.
+  forestcover <- mutate(forestcover, EstTreeType="X")
+  forestcover$EstTreeType <- as.character(forestcover$EstTreeType)
+}
+```
+
+## Calc Probabilities using preferred Models
+
+```{r "Calc Probabilities"}
+if (firstTime) {
+  # Calculate probabilities for each tree type based on appropriate logistic model
+  load("Aspen_Ind_Sig_LogMod.Rdata")
+  forestcover$AspenProb=predict(Aspen_Ind_Sig_LogMod, type="response",newdata=forestcover)
+  
+  load("CotWil_Agg_Sig_LogMod.Rdata")
+  forestcover$CotWilProb=predict(CotWil_Agg_Sig_LogMod, type="response",newdata=forestcover)
+  
+  load("DougFir_Agg_Sig_LogMod.Rdata")
+  forestcover$DougFirProb=predict(DougFir_Agg_Sig_LogMod, type="response",newdata=forestcover)
+  
+  load("Krumm_Agg_Sig_LogMod.Rdata")
+  forestcover$KrummProb=predict(Krumm_Agg_Sig_LogMod, type="response",newdata=forestcover)
+  
+  load("Lodge_Agg_Sig_LogMod.Rdata")
+  forestcover$LodgeProb=predict(Lodge_Agg_Sig_LogMod, type="response",newdata=forestcover)
+  
+  load("Ponder_Ind_Sig_LogMod.Rdata")
+  forestcover$PonderProb=predict(Ponder_Ind_Sig_LogMod, type="response",newdata=forestcover)
+  
+  load("SprFir_Agg_Sig_LogMod.Rdata")
+  forestcover$SprFirProb=predict(SprFir_Agg_Sig_LogMod, type="response",newdata=forestcover)
+}
+```
+
+## Create Training and Testing Data
+
+```{r "Create Training and Testing Data"}
+if (firstTime) {
+  # Create training and testing data
+  split = sample.split(forestcover$CovType, 0.70) # we want 65% in the training set
+  forestTrain = subset(forestcover, split == TRUE)
+  forestTest  = subset(forestcover, split == FALSE)
+  
+  # Save the training file with probabilities for later use
+  out1file="C:/Users/Tom/git/datasciencefoundation/ForestCoverage/forestTrainProbs.csv"
+  write.csv(forestTrain, file=out1file,row.names=FALSE)
+  
+  # Save the testing file with probabilities for later use
+  out2file="C:/Users/Tom/git/datasciencefoundation/ForestCoverage/forestTestProbs.csv"
+  write.csv(forestTest, file=out2file,row.names=FALSE)
+}
+```
+
+## Load Training and Test Sets with Probabilities Already Calculated
+
+```{r "Load Training and Test Sets with Probabilities"}
+if (!firstTime) {
+  in1file="C:/Users/Tom/git/datasciencefoundation/ForestCoverage/forestTrainProbs.csv"
+  forestTrain <- read.csv(in1file,header=TRUE,sep=",")
+  
+  in2file="C:/Users/Tom/git/datasciencefoundation/ForestCoverage/forestTestProbs.csv"
+  forestTest <- read.csv(in2file,header=TRUE,sep=",") 
+  
+  forestTrain$EstTreeType <- as.character(forestTrain$EstTreeType)
+  forestTest$EstTreeType <- as.character(forestTest$EstTreeType)
+}
+
+#str(forestTest, list.len = ncol(forestTest))
+
+```
+
+## Helper functions
+
+Create helper functions to calculate tree types, model stats and search for optimum
+model thresholds.
+
+### Find Model Thresholds Helper Function
+
+The thresholds that were found for the individual logistic regression runs are not
+the optimum when combining the models. A function to find the optimum thresholds on the
+training data is shown next. 
+
+Each threshold is varied from 0.0 to 1.0 in 0.1 increments finding the the threshold 
+that maximizes the squared sums of sensitivity and specificity for all seven logistic models
+combined.. 
+The threshold maximizing the sensitivity/specificity combination is further refined in 0.01
+increments.
+
+```{r "Init Work Vars"}
+treeLabels=c("Aspen", "CotWill", "DougFir", "Krumm", "Lodge", "Ponder", "SpruceFir")
+zeros=c(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+zeroMat <- data.frame(Aspen=zeros, CotWil=zeros, DougFir=zeros, Krumm=zeros, 
+                           Lodge=zeros, Ponder=zeros, SpruceFir=zeros)
+rownames(zeroMat)<-treeLabels
+colnames(zeroMat)<-treeLabels
+confusionMat=zeroMat
+```
+
+### Calculate 7x7 Confusion Matrix
+
+A 7x7 confusion matrix is used to aid calculating sensitivity and specificity of
+the data sets when all seven logistic models are applied to the data.
+
+The results vary based on the order the logistic models are applied. 
+Different orders are presented and analyzed.
+
+A hybrid sensitivity and specificity is generated for the seven combined logistic
+regression models by creating a weighted average of the sensitivity and specificity
+of the seven tree types.
+
+```{r "CalcConfusionMatrix"}
+
+calcConfusionMatrix<-function (
+  df,         # dataset with Actual Coverage Type and Estimated Coverage Type set
+  ccmDebug=0  # debug: 0=no printing, 1=print details
+)
+{
+  treeNames=c("Aspen", "Cotton&Willow", "DouglasFir", "Krummholz", 
+              "Lodgepole", "Ponderosa", "Spruce&Fir")
+  confusionMat=zeroMat
+ 
+  # Create a confusion matrix
+  for (drow in 1:7) {
+    actLabel<-treeNames[drow]
+    for (dcol in 1:7) {
+      predLabel<-treeNames[dcol]
+      
+      # populate each cell of the confusion matrix comparing the actual coverage type
+      # with the coverage type estimated by the model
+      confusionMat[drow,dcol]=sum(df$CovName==actLabel & df$EstTreeType==predLabel)
+    }
+  }
+  
+  # Abbreviate the row and column names so the table is not split up by column
+  confRows<-c("Aspen_Act", "Cot&Wil", "DougFir", "Krumm", 
+              "Lodge", "Ponder", "SprFir")
+  confCols<-c("Aspen_Pre", "Cot&Wil", "DougFir", "Krumm", 
+              "Lodge", "Ponder", "Spr&Fir")
+  rownames(confusionMat)<-confRows
+  colnames(confusionMat)<-confCols
+  
+  if (ccmDebug) {
+    print("Confusion Matrix (rows are actual, columns are predicted) =")
+    print(confusionMat)
+  }
+  
+  # create a 7x7 zero matrix to hold statistics
+  statsMat=zeroMat
+  rownames(statsMat)<-treeLabels
+  colnames(statsMat)<-c("TP","FP","FN","TN","Acc","Sens","Spec")
+  
+  # initialize variables
+  weightedSens=0.0 
+  weightedSpec=0.0
+  accuracy=0.0
+  
+  # Calculate statistics from confusion matrix 
+  for(treeIndex in 1:7) { # calculate stats for each tree coverage type
+    TP = confusionMat[treeIndex,treeIndex] # True Positive for class is on the diagonal
+    accuracy=accuracy+TP # caclulate accuracy by first accumulating all True Positives
+    totClass=sum(confusionMat[treeIndex,]) # total number of class is the row sum (all actual values for the class)
+    FN = sum(confusionMat[treeIndex,])-TP # False Neg = totClass - True Pos
+    # which is sum of the cells in the Actual class row not predicting the class value
+    FP = sum(confusionMat[,treeIndex])-TP # False Pos = col sum of predicted values - True Pos
+    # which is the sum of the cells in the predicted class that are not the actual class value
+    TN =0 # Initialize True Negative
+    for (drow in 1:7) { # True negative is sum of all cells not in row or col of the class
+      for (dcol in 1:7) {
+        if (drow != treeIndex & dcol != treeIndex) TN=TN+confusionMat[drow,dcol]
+      }
+    }
+    statsMat[treeIndex,1]=TP
+    statsMat[treeIndex,2]=FP
+    statsMat[treeIndex,3]=FN
+    statsMat[treeIndex,4]=TN
+    statsMat[treeIndex,5]=(TP + TN)/(TP+TN+FP+FN) # Set accuracy
+    statsMat[treeIndex,6]=TP/(TP+FN) # Set Sensitivity for feature - positive predicted%
+    statsMat[treeIndex,7]=TN/(TN+FP) # Set Specificity for feature - negative predicted%
+    
+    # accumulate weighted sensitivity and specificity for later overall model to calculation
+    weightedSens = weightedSens + (totClass * statsMat[treeIndex,6])
+    weightedSpec = weightedSpec + (totClass * statsMat[treeIndex,7])
+  }
+  
+  # complete weighted calculations by dividing by number of rows in data set
+  weightedSens = weightedSens / nrow(df)
+  weightedSpec = weightedSpec / nrow(df)
+  accuracy=accuracy/nrow(df)
+  
+  if (ccmDebug) {
+    print("Stats")
+    print(statsMat)
+    print(paste("Weighted Avg Sens=",weightedSens))
+    print(paste("Weighted Avg Spec=",weightedSpec))
+    print(paste("Accuracy         =",accuracy))
+  }
+  c(weightedSens, weightedSpec, accuracy)
+}
+```
+
+### Calculate Tree Type Helper Function
+
+```{r "CalcTreeTypes"}
+# Calculate tree types based on passed in threshholds. 
+# Probabilities were previously calculated 
+calcTreeTypes <-
+function(tds,                # tree data set
+         mode,
+         AspenThresh,
+         CotWillThresh,
+         DougFirThresh,
+         KrummThresh,
+         LodgeThresh,
+         PonderThresh,
+         SprFirThresh
+         ) 
+{
+  tds$EstTreeType="X" # set Estimated tree type to default
+  #tds$EstTreeType=as.character(tds$EstTreeType)
+  
+  if(1 == 2) {
+    print(AspenThresh)
+    print(CotWillThresh)
+    print(DougFirThresh)
+    print(KrummThresh)
+    print(LodgeThresh)
+    print(PonderThresh)
+    print(SprFirThresh)
+  }
+  
+  print(paste("calcTreeType Mode=",mode))
+  # determine tree types applying logistic regression models in order described by mode
+  if (mode == 1) { # sensitivity order, highest to lowest, update all
+    print(paste("calcTreeType(Mode 1)"))
+    tds$EstTreeType[tds$EstTreeType=="X" & tds$PonderProb > PonderThresh] = "Ponderosa"
+    tds$EstTreeType[tds$EstTreeType=="X" & tds$DougFirProb > DougFirThresh] = "DouglasFir"
+    tds$EstTreeType[tds$EstTreeType=="X" & tds$KrummProb > KrummThresh] = "Krummholz"
+    tds$EstTreeType[tds$EstTreeType=="X" & tds$CotWilProb > CotWilThresh] = "Cotton&Willow"
+    tds$EstTreeType[tds$EstTreeType=="X" & tds$AspenProb > AspenThresh] = "Aspen"
+    tds$EstTreeType[tds$EstTreeType=="X" & tds$SprFirProb > SprFirThresh] = "Spruce&Fir"
+    tds$EstTreeType[tds$EstTreeType=="X" & tds$LodgeProb > LodgeThresh] = "Lodgepole"
+  } else if (mode == 2) { # specifcity order, highest to lowest, update unassigned only
+    print(paste("calcTreeType(Mode 2)"))
+    tds$EstTreeType[tds$EstTreeType=="X" & tds$CotWilProb > CotWilThresh]="Cotton&Willow"
+    tds$EstTreeType[tds$EstTreeType=="X" & tds$PonderProb > PonderThresh] = "Ponderosa"
+    tds$EstTreeType[tds$EstTreeType=="X" & tds$KrummProb > KrummThresh] = "Krummholz"
+    tds$EstTreeType[tds$EstTreeType=="X" & tds$DougFirProb > DougFirThresh] = "DouglasFir"
+    tds$EstTreeType[tds$EstTreeType=="X" & tds$LodgeProb > LodgeThresh] = "Lodgepole"
+    tds$EstTreeType[tds$EstTreeType=="X" & tds$AspenProb > AspenThresh] = "Aspen"
+    tds$EstTreeType[tds$EstTreeType=="X" & tds$SprFirProb > SprFirThresh] = "Spruce&Fir"
+  } else if (mode ==3) { # specifcity order, lowest to highest, update unassigned only
+    print(paste("calcTreeType(Mode 3)"))
+    tds$EstTreeType[tds$EstTreeType=="X" & tds$SprFirProb > SprFirThresh] = "Spruce&Fir"
+    tds$EstTreeType[tds$EstTreeType=="X" & tds$AspenProb > AspenThresh] = "Aspen"
+    tds$EstTreeType[tds$EstTreeType=="X" & tds$LodgeProb > LodgeThresh] = "Lodgepole"
+    tds$EstTreeType[tds$EstTreeType=="X" & tds$DougFirProb > DougFirThresh] = "DouglasFir"
+    tds$EstTreeType[tds$EstTreeType=="X" & tds$KrummProb > KrummThresh] = "Krummholz"
+    tds$EstTreeType[tds$EstTreeType=="X" & tds$PonderProb > PonderThresh] = "Ponderosa"
+    tds$EstTreeType[tds$EstTreeType=="X" & tds$CotWilProb > CotWilThresh]="Cotton&Willow"
+  } else { # specifcity order, lowest to highest, update all
+    print(paste("calcTreeType(Mode 4)"))
+    tds$EstTreeType[tds$SprFirProb > SprFirThresh] = "Spruce&Fir"
+    tds$EstTreeType[tds$AspenProb > AspenThresh] = "Aspen"
+    tds$EstTreeType[tds$LodgeProb > LodgeThresh] = "Lodgepole"
+    tds$EstTreeType[tds$DougFirProb > DougFirThresh] = "DouglasFir"
+    tds$EstTreeType[tds$KrummProb > KrummThresh] = "Krummholz"
+    tds$EstTreeType[tds$PonderProb > PonderThresh] = "Ponderosa"
+    tds$EstTreeType[tds$CotWilProb > CotWilThresh]="Cotton&Willow"
+  }
+  
+  ccm=calcConfusionMatrix(tds,1) # report stats for the combined 7 logistic regression models
+  ccm
+}
+```
+
+### Find Model Threshold Helper Function
+
+A function to search for optimum thresholds for the combined seven logistic regression
+models is shown next.
+
+```{r "findModelThresholds"}
+# find Threshholdsw optimized for the seven combined logistic regression models
+findModelThresholds <-
+function(tds, 
+         printLevel,
+         findThreshold,
+         mode,
+         iterations,
+         initAspenThresh,
+         initCotWillThresh,
+         initDougFirThresh,
+         initKrummThresh,
+         initLodgeThresh,
+         initPonderThresh,
+         initSprFirThresh
+         ) {
+  
+  if (printLevel > 1) print(table(tds$EstTreeType))
+  
+  # Reset data
+  tds$EstTreeType="X"
+  
+  threshs =c(initAspenThresh, initCotWillThresh, initDougFirThresh, initKrummThresh,
+                initLodgeThresh, initLodgeThresh, initSprFirThresh)
+  
+  for (i in 1:iterations) { # number of times to optimize complete set of thresholds
+    
+    for (j in 1:7) { # variables to optimize
+      
+      start=0.1
+      end = 0.9
+      increment = 0.1
+      curThresh=start
+      bestAccuracy = 0.0
+      bestThresh = threshs[j]
+      
+      for (k in 1:2) { # optimize increments by 0.1, 0.01, 0.001
+        more=TRUE 
+        #bestThresh=threshs[j] # save current threshold for kth tree type
+        
+        if (printLevel > 0) {
+          print(paste("Start=",start,", end=",end, ", inc=",increment))
+          print("--------------------------")
+        }
+        
+        while(more) {
+          threshs[j]= curThresh
+  
+          # determine tree types applying logistic regression models in order described 
+          # in comments below
+          if (mode == 1) { # sensitivity order, highest to lowest, update only if unassigned
+            tds$EstTreeType[tds$EstTreeType=="X" & tds$PonderProb > threshs[6]] = "Ponderosa"
+            tds$EstTreeType[tds$EstTreeType=="X" & tds$DougFirProb > threshs[3]] = "DouglasFir"
+            tds$EstTreeType[tds$EstTreeType=="X" & tds$KrummProb > threshs[4]] = "Krummholz"
+            tds$EstTreeType[tds$EstTreeType=="X" & tds$CotWilProb > threshs[2]]="Cotton&Willow"
+            tds$EstTreeType[tds$EstTreeType=="X" & tds$AspenProb > threshs[1]] = "Aspen"
+            tds$EstTreeType[tds$EstTreeType=="X" & tds$SprFirProb > threshs[7]] = "Spruce&Fir"
+            tds$EstTreeType[tds$EstTreeType=="X" & tds$LodgeProb > threshs[5]] = "Lodgepole"
+          } else if (mode ==2) { # specifcity order, highest to lowest, update unassigned only
+            tds$EstTreeType[tds$EstTreeType=="X" & tds$CotWilProb > threshs[2]]="Cotton&Willow"
+            tds$EstTreeType[tds$EstTreeType=="X" & tds$PonderProb > threshs[6]] = "Ponderosa"
+            tds$EstTreeType[tds$EstTreeType=="X" & tds$KrummProb > threshs[4]] = "Krummholz"
+            tds$EstTreeType[tds$EstTreeType=="X" & tds$DougFirProb > threshs[3]] = "DouglasFir"
+            tds$EstTreeType[tds$EstTreeType=="X" & tds$LodgeProb > threshs[5]] = "Lodgepole"
+            tds$EstTreeType[tds$EstTreeType=="X" & tds$AspenProb > threshs[1]] = "Aspen"
+            tds$EstTreeType[tds$EstTreeType=="X" & tds$SprFirProb > threshs[7]] = "Spruce&Fir"
+          } else if (mode ==3) { # specifcity order, lowest to highest, update unassigned only
+            tds$EstTreeType[tds$EstTreeType=="X" & tds$SprFirProb > threshs[7]] = "Spruce&Fir"
+            tds$EstTreeType[tds$EstTreeType=="X" & tds$AspenProb > threshs[1]] = "Aspen"
+            tds$EstTreeType[tds$EstTreeType=="X" & tds$LodgeProb > threshs[5]] = "Lodgepole"
+            tds$EstTreeType[tds$EstTreeType=="X" & tds$DougFirProb > threshs[3]] = "DouglasFir"
+            tds$EstTreeType[tds$EstTreeType=="X" & tds$KrummProb > threshs[4]] = "Krummholz"
+            tds$EstTreeType[tds$EstTreeType=="X" & tds$PonderProb > threshs[6]] = "Ponderosa"
+            tds$EstTreeType[tds$EstTreeType=="X" & tds$CotWilProb > threshs[2]]="Cotton&Willow"
+          } else { # specifcity order, lowest to highest, update all
+            tds$EstTreeType[tds$SprFirProb > threshs[7]] = "Spruce&Fir"
+            tds$EstTreeType[tds$AspenProb > threshs[1]] = "Aspen"
+            tds$EstTreeType[tds$LodgeProb > threshs[5]] = "Lodgepole"
+            tds$EstTreeType[tds$DougFirProb > threshs[3]] = "DouglasFir"
+            tds$EstTreeType[tds$KrummProb > threshs[4]] = "Krummholz"
+            tds$EstTreeType[tds$PonderProb > threshs[6]] = "Ponderosa"
+            tds$EstTreeType[tds$CotWilProb > threshs[2]]="Cotton&Willow"
+          }
+          #accuracy = (sum(tds$EstTreeType == tds$CovName))/nrow(tds)
+          
+          result=calcConfusionMatrix(tds,0)
+          # accuracy=result[1]^2 + result[2]^2 # sensitivity^2 + specificity^2
+          accuracy=result[1] + result[2]       # sensitivity   + specificity
+          
+          # reset data
+          tds$EstTreeType="X"
+
+          # print thresholds
+          if (printLevel > 0) {
+            printAccuracy = as.integer(accuracy * 100000)/1000.0
+            print(paste("Accuracy(",threshs[1],threshs[2],threshs[3],
+                      threshs[4],threshs[5],threshs[6],threshs[7],")=",
+                      printAccuracy, ", i=",i,", j=",j,", bestThresh=",bestThresh))
+          }
+          
+          # if accuracy improves, save best accuracy and threshold
+          if (accuracy > bestAccuracy) {
+            bestAccuracy = accuracy
+            bestThresh = curThresh
+          }
+          curThresh = curThresh + increment
+          if (curThresh > end) more = FALSE
+        }
+        
+        # set new start, end and increment
+        start = bestThresh - increment
+        end = bestThresh + increment
+        increment = increment / 10.0
+        if (start <= 0.0) start = 0.0 + increment
+        if (end >= 1.0) end = 1.0 - increment
+        
+        curThresh = start        
+      }
+      
+      threshs[j]=bestThresh
+    }
+  }
+  
+  if (printLevel) print(table(tds$EstTreeType))
+  
+  c(bestAccuracy,threshs)
+}  
+
+```
+
+## Determine Tree Types
+
+Determine tree type using the logistic regression model that were previously developed.
+Different order of applying the models are presented and discussed.
+
+```{r "Predict Tree Types"}
+##                             Base Acc Sens Spec AUC  Count Thresh
+## 24     Ponderosa Sig Ind     93% 92%  97%  92% 98%  10726  0.068      X
+## 11   Douglas Fir Sig Agg     97% 87%  97%  86% 95%   5210  0.033      X
+## 15     Krummholz Sig Agg     96% 90%  95%  89% 97%   6153  0.029      X
+## 7  Cotton/Willow Sig Agg     99% 95%  94%  95% 98%    824  0.008      X
+## 4          Aspen Sig Ind     98% 68%  93%  68% 87%   2848  0.011      X
+## 19     Lodgepole Sig Agg     51% 75%  79%  72% 82%  84990  0.482      X
+## 27    Spruce/Fir Sig Agg     63% 73%  87%  66% 83%  63552  0.307      X
+```
+
+Initial testing of the combined regression models uses the thresholds that
+were found when the individual regression models were built. 
+Thresholds that optimize sensitivity and specificity for the combined
+models will be discussed later.
+
+```{r "Set initial Thresholds"}
+  PonderThresh =0.068 
+  DougFirThresh=0.033 
+  KrummThresh  =0.029 # 0.040 # 0.029  
+  CotWilThresh =0.008 # 0.020 # 0.008
+  AspenThresh  =0.011 # 0.020 # 0.011   
+  LodgeThresh  =0.482
+  SprFirThresh =0.307
+ 
+```
+
+### High Sensitiviy - Update Unassigned Method 1
+
+The first method tested applies the logistic regression models in 
+sensitivity order from highest to lowest. The tree estimates are updated
+by subsequent models only if the tree coverage type has not already been assigned.
+
+```{r "Combined Test Mode 1"}
+  # use training set with mode=1 
+  # mode=1: apply regression models in sensitivity order, high to low, update only if unassigned
+  ctt1=calcTreeTypes(forestTrain, 1, AspenThresh, CotWilThresh, DougFirThresh,
+                KrummThresh, LodgeThresh, PonderThresh, SprFirThresh) 
+
+  resultSummary <- data.frame("Description"=character(), 
+                              "Aspen"=double(), "CotWl"=double(), "DougF"=double(),
+                             "Krumm"=double(), "Lodge"=double(), "Pondr"=double(),
+                             "SprFr"=double(), "Sens"=double(), "Spec"=double(),
+                             "SensPlusSpec"=double(), stringsAsFactors=FALSE)
+
+  tsum=as.integer((ctt1[1]+ctt1[2])*1000)/1000.0
+  resultSummary[nrow(resultSummary)+1,]<- 
+                             c("HiSens-UnAsgn-1", 
+                             Aspen=AspenThresh, CotWl=CotWilThresh, 
+                             DougF=DougFirThresh, Krumm=KrummThresh,
+                             Lodge=LodgeThresh, Pondr=PonderThresh, 
+                             SprFr=SprFirThresh,
+                             Sens=as.integer(ctt1[1]*1000)/1000.0, 
+                             Spec=as.integer(ctt1[2]*1000)/1000.0, 
+                             SensPlusSpec=tsum)
+```
+
+The weighted sensitivity/specificity of the 'High Sensitivity-Update Unassigned' method is
+`r as.integer(ctt1[1]*100000)/1000.0`% / `r as.integer(ctt1[2]*100000)/1000.0`%.
+It is interesting that the accuracy and the weighted sensitivity are identical.
+The formulas and code have been doubled checked to ensure the calculations are correct.
+
+Except for the largest populations, the specificities are at least 97% which is good.
+The large tree populations unfortunately only have specificities of 72% and 81%.
+
+The sensitivities for several of the tree types is pretty low, but they are the
+smaller populations and don't affect the weighted value much. Unfortunately the
+large population tree types come in at 75%.
+
+### High Specificity - Update Unassigned Method 2
+
+The second method tested applies the logistic regression models in 
+specificity order from highest to lowest. The tree estimates are updated
+by subsequent models only if the tree coverage type has not already been assigned.
+
+```{r "Combined Test Mode 2"}  
+  # use training set with mode=2
+  # mode=2: apply regression models in specifcity order, high to low, update only if unassigned
+  ctt2=calcTreeTypes(forestTrain, 2, AspenThresh, CotWilThresh, DougFirThresh,
+                KrummThresh, LodgeThresh, PonderThresh, SprFirThresh) 
+
+  tsum=as.integer((ctt2[1]+ctt2[2])*1000)/1000.0
+  resultSummary[nrow(resultSummary)+1,]<- 
+                             c("HiSpec-UnAsgn-1", 
+                             Aspen=AspenThresh, CotWl=CotWilThresh, 
+                             DougF=DougFirThresh, Krumm=KrummThresh,
+                             Lodge=LodgeThresh, Pondr=PonderThresh, 
+                             SprFr=SprFirThresh,
+                             Sens=as.integer(ctt2[1]*1000)/1000.0, 
+                             Spec=as.integer(ctt2[2]*1000)/1000.0, 
+                             SensPlusSpec=tsum)
+```
+
+The weighted sensitivity/specificity of the 'High Specificity - Update Unassigned' model is
+`r as.integer(ctt2[1]*100000)/1000.0`% / `r as.integer(ctt2[2]*100000)/1000.0`%.
+
+The specificity of this model has improved over the first by 6% but the sensitivity
+has decreased by 10%. It is not an overall improvement.
+
+### Low Specificity - Update Unassigned Method 3
+
+The third method tested applies the logistic regression models in 
+specificity order from lowest to highest. The tree estimates are updated
+by subsequent models only if the tree coverage type has not already been assigned.
+
+```{r "Combined Test Mode 3"}   
+   # use training set with mode=3
+  # mode=3: apply regression models in specifcity order, low to high, update only if unassigned
+  ctt3=calcTreeTypes(forestTrain, 3, AspenThresh, CotWilThresh, DougFirThresh,
+                KrummThresh, LodgeThresh, PonderThresh, SprFirThresh) 
+
+  tsum=as.integer((ctt3[1]+ctt3[2])*1000)/1000.0
+  resultSummary[nrow(resultSummary)+1,]<- 
+                             c("LoSpec-UnAsgn-1", 
+                             Aspen=AspenThresh, CotWl=CotWilThresh, 
+                             DougF=DougFirThresh, Krumm=KrummThresh,
+                             Lodge=LodgeThresh, Pondr=PonderThresh, 
+                             SprFr=SprFirThresh,
+                             Sens=as.integer(ctt3[1]*1000)/1000.0, 
+                             Spec=as.integer(ctt3[2]*1000)/1000.0, 
+                             SensPlusSpec=tsum)
+```
+The weighted sensitivity/specificity of the 'Low Specificity - Update Unassigned' model is
+`r as.integer(ctt3[1]*100000)/1000.0`% / `r as.integer(ctt3[2]*100000)/1000.0`%.
+
+This is a further degradation from the first and second methods.
+
+### Low Specificity - Update All Method 4
+
+The fourth method tested applies the logistic regression models in 
+specificity order from lowest to highest. The tree estimates are updated
+by subsequent models even if the tree coverage type has been previously assigned.
+
+```{r "Combined Test Mode 4"}   
+  # use training set with mode=4
+  # mode=4: apply regression models in specifcity order, low to high, update all
+  ctt4=calcTreeTypes(forestTrain, 4, AspenThresh, CotWilThresh, DougFirThresh,
+                KrummThresh, LodgeThresh, PonderThresh, SprFirThresh) 
+
+  tsum=as.integer((ctt4[1]+ctt4[2])*1000)/1000.0
+  resultSummary[nrow(resultSummary)+1,]<- 
+                             c("LoSpec-All-1", 
+                             Aspen=AspenThresh, CotWl=CotWilThresh, 
+                             DougF=DougFirThresh, Krumm=KrummThresh,
+                             Lodge=LodgeThresh, Pondr=PonderThresh, 
+                             SprFr=SprFirThresh,
+                             Sens=as.integer(ctt4[1]*1000)/1000.0, 
+                             Spec=as.integer(ctt4[2]*1000)/1000.0, 
+                             SensPlusSpec=tsum)
+```
+The weighted sensitivity/specificity of the 'Low Specificity - Update All' model is
+`r as.integer(ctt4[1]*100000)/1000.0`% / `r as.integer(ctt4[2]*100000)/1000.0`%.
+
+### Low Specificity - Update All Method 4 - Manual Thresholds
+
+The fourth method is applied again but using thresholds that were
+chosen by visually examining the ROC graphs for the point at which a 
+45 degree tangent appear on the graph.
+The tree estimates are updated
+by subsequent models even if the tree coverage type has been previously assigned.
+
+```{r}
+  # Alternate manual threshold selection
+  # 0.01, 0.01, 0.02, 0.05, (0.50,0.60),  0.08, (0.40, 0.50)
+  AspenThresh=0.01
+  CotWilThresh=0.01
+  DougFirThresh=0.02
+  KrummThresh=0.05
+  LodgeThresh=0.50
+  PonderThresh=0.08
+  SprFirThresh=0.40
+  
+  cttM=calcTreeTypes(forestTest,       # tree data set
+                4,                # mode
+                AspenThresh,
+                CotWilThresh,
+                DougFirThresh,
+                KrummThresh,
+                LodgeThresh,
+                PonderThresh,
+                SprFirThresh
+               )
+
+  cttM
+  
+  tsum=as.integer((cttM[1]+cttM[2])*1000)/1000.0
+  resultSummary[nrow(resultSummary)+1,]<- 
+                  c("LoSpec-All ROC", 
+                   Aspen=AspenThresh, CotWl=CotWilThresh, 
+                   DougF=DougFirThresh, Krumm=KrummThresh,
+                   Lodge=LodgeThresh, Pondr=PonderThresh, 
+                   SprFr=SprFirThresh,
+                   Sens=as.integer(cttM[1]*1000)/1000.0, 
+                   Spec=as.integer(cttM[2]*1000)/1000.0, 
+                   SensPlusSpec=tsum)
+```
+
+The weighted sensitivity/specificity of the 'Low Specificity - Update All - ROC' model is
+`r as.integer(cttM[1]*100000)/1000.0`% / `r as.integer(cttM[2]*100000)/1000.0`%.
+
+It looks like the first model is the best. But before choosing a final model, the
+thresholds are adjusted to optimize each model.
+
+```{r}
+#knitr::knit_exit()
+```
+
+## Find Optimum Thresholds for Model on Training Set
+
+### Find Thresholds - High Sensitivity-Update Unassigned Model 1
+
+Find optimized thresholds for the 'High Sensitivity-Update Unassigned' model.
+Start with the thresholds originally found for the individually developed regression models.
+Only the first threshold search shows the steps in the search. 
+The remaining threshold searches show just the results.
+
+```{r "Find Threshold - High Sensitivity-Update Unassigned Model"}
+  PonderThresh =0.068 
+  DougFirThresh=0.033 
+  KrummThresh  =0.029  
+  CotWilThresh =0.008
+  AspenThresh  =0.011   
+  LodgeThresh  =0.482
+  SprFirThresh =0.307
+  
+  result1 = findModelThresholds(
+     forestTrain, # data set
+     1,           # print Level 0:none, 1:details
+     1,           # find threshold: 0=no, 1=yes
+     1,           # model
+     2,           # iterations to revise thresholds
+     AspenThresh,
+     CotWilThresh,
+     DougFirThresh,
+     KrummThresh,
+     LodgeThresh,
+     PonderThresh,
+     SprFirThresh)
+  
+  result1
+  
+  accuracy=result1[1]
+  AspenThresh=result1[2]
+  CotWilThresh=result1[3]
+  DougFirThresh=result1[4]
+  KrummThresh=result1[5]
+  LodgeThresh=result1[6]
+  PonderThresh=result1[7]
+  SprFirThresh=result1[8]
+  
+  ctt5=calcTreeTypes(forestTrain,      # tree data set
+                1,                # mode
+                AspenThresh,
+                CotWilThresh,
+                DougFirThresh,
+                KrummThresh,
+                LodgeThresh,
+                PonderThresh,
+                SprFirThresh
+               )
+  
+  tsum=as.integer((ctt5[1]+ctt5[2])*1000)/1000.0
+  resultSummary[nrow(resultSummary)+1,]<- 
+                             c("HiSens-UnAsgn-2", 
+                             Aspen=AspenThresh, CotWl=CotWilThresh, 
+                             DougF=DougFirThresh, Krumm=KrummThresh,
+                             Lodge=LodgeThresh, Pondr=PonderThresh, 
+                             SprFr=SprFirThresh,
+                             Sens=as.integer(ctt5[1]*1000)/1000.0, 
+                             Spec=as.integer(ctt5[2]*1000)/1000.0, 
+                             SensPlusSpec=tsum)
+```
+
+### Find Thresholds - High Specificity-Update Unassigned Model 2
+
+Find optimized thresholds for the 'High Specificity-Update Unassigned' model.
+Start with the thresholds originally found for the individually developed regression models.
+
+```{r "Find Threshold Mode 2"}
+  PonderThresh =0.068 
+  DougFirThresh=0.033 
+  KrummThresh  =0.029  
+  CotWilThresh =0.008
+  AspenThresh  =0.011   
+  LodgeThresh  =0.482
+  SprFirThresh =0.307
+  
+  result2 = findModelThresholds(
+     forestTrain, # data set
+     0,           # print Level 0:none, 1:details
+     1,           # find threshold: 0=no, 1=yes
+     2,           # mode
+     2,           # iterations to revise thresholds
+     AspenThresh,
+     CotWilThresh,
+     DougFirThresh,
+     KrummThresh,
+     LodgeThresh,
+     PonderThresh,
+     SprFirThresh)
+  
+  result2
+  
+  accuracy=result2[1]
+  AspenThresh=result2[2]
+  CotWilThresh=result2[3]
+  DougFirThresh=result2[4]
+  KrummThresh=result2[5]
+  LodgeThresh=result2[6]
+  PonderThresh=result2[7]
+  SprFirThresh=result2[8]
+  
+  ctt6=calcTreeTypes(forestTrain,    # tree data set
+                2,              # mode
+                AspenThresh,
+                CotWilThresh,
+                DougFirThresh,
+                KrummThresh,
+                LodgeThresh,
+                PonderThresh,
+                SprFirThresh
+               )
+  
+  tsum=as.integer((ctt6[1]+ctt6[2])*1000)/1000.0
+  resultSummary[nrow(resultSummary)+1,]<- 
+                             c("HiSpec-UnAsgn-2", 
+                             Aspen=AspenThresh, CotWl=CotWilThresh, 
+                             DougF=DougFirThresh, Krumm=KrummThresh,
+                             Lodge=LodgeThresh, Pondr=PonderThresh, 
+                             SprFr=SprFirThresh,
+                             Sens=as.integer(ctt6[1]*1000)/1000.0, 
+                             Spec=as.integer(ctt6[2]*1000)/1000.0, 
+                             SensPlusSpec=tsum)
+```
+
+### Find Thresholds - Low Specificity-Update Unassigned Model 3
+
+Find optimized thresholds for the 'Low Specificity-Update Unassigned' model.
+Start with the thresholds originally found for the individually developed regression models.
+
+```{r "Find Threshold Mode 3"}
+  PonderThresh =0.068 
+  DougFirThresh=0.033 
+  KrummThresh  =0.029  
+  CotWilThresh =0.008
+  AspenThresh  =0.011   
+  LodgeThresh  =0.482
+  SprFirThresh =0.307
+  
+  result3 = findModelThresholds(
+     forestTrain, # data set
+     0,           # print Level 0:none, 1:details
+     1,           # find threshold: 0=no, 1=yes
+     3,           # mode
+     2,           # iterations to revise thresholds
+     AspenThresh,
+     CotWilThresh,
+     DougFirThresh,
+     KrummThresh,
+     LodgeThresh,
+     PonderThresh,
+     SprFirThresh)
+  
+  result3
+  
+  accuracy=result3[1]
+  AspenThresh=result3[2]
+  CotWilThresh=result3[3]
+  DougFirThresh=result3[4]
+  KrummThresh=result3[5]
+  LodgeThresh=result3[6]
+  PonderThresh=result3[7]
+  SprFirThresh=result3[8]
+  
+  ctt7=calcTreeTypes(forestTrain,      # tree data set
+                3,                # mode
+                AspenThresh,
+                CotWilThresh,
+                DougFirThresh,
+                KrummThresh,
+                LodgeThresh,
+                PonderThresh,
+                SprFirThresh
+               )
+  
+  tsum=as.integer((ctt7[1]+ctt7[2])*1000)/1000.0
+  resultSummary[nrow(resultSummary)+1,]<- 
+                             c("LoSpec-UnAsgn-2", 
+                             Aspen=AspenThresh, CotWl=CotWilThresh, 
+                             DougF=DougFirThresh, Krumm=KrummThresh,
+                             Lodge=LodgeThresh, Pondr=PonderThresh, 
+                             SprFr=SprFirThresh,
+                             Sens=as.integer(ctt7[1]*1000)/1000.0, 
+                             Spec=as.integer(ctt7[2]*1000)/1000.0, 
+                             SensPlusSpec=tsum)
+```
+
+### Find Thresholds - Low Specificity-Update All Model 4
+
+Find optimized thresholds for the 'Low Specificity-Update All' model.
+Start with the thresholds originally found for the individually developed regression models.
+
+```{r "Find Threshold Mode 4"}
+  PonderThresh =0.068 
+  DougFirThresh=0.033 
+  KrummThresh  =0.029  
+  CotWilThresh =0.008
+  AspenThresh  =0.011   
+  LodgeThresh  =0.482
+  SprFirThresh =0.307
+  
+  result4 = findModelThresholds(
+     forestTrain, # data set
+     0,           # print Level 0:none, 1:details
+     1,           # find threshold: 0=no, 1=yes
+     4,           # mode
+     2,           # iterations to revise thresholds
+     AspenThresh,
+     CotWilThresh,
+     DougFirThresh,
+     KrummThresh,
+     LodgeThresh,
+     PonderThresh,
+     SprFirThresh)
+  
+  result4
+  
+  accuracy=result4[1]
+  AspenThresh=result4[2]
+  CotWilThresh=result4[3]
+  DougFirThresh=result4[4]
+  KrummThresh=result4[5]
+  LodgeThresh=result4[6]
+  PonderThresh=result4[7]
+  SprFirThresh=result4[8]
+  
+  ctt8=calcTreeTypes(forestTrain,      # tree data set
+                4,                # mode
+                AspenThresh,
+                CotWilThresh,
+                DougFirThresh,
+                KrummThresh,
+                LodgeThresh,
+                PonderThresh,
+                SprFirThresh
+               )
+  
+  tsum=as.integer((ctt8[1]+ctt8[2])*1000)/1000.0
+  resultSummary[nrow(resultSummary)+1,]<- 
+                             c("LoSpec-All-2", 
+                             Aspen=AspenThresh, CotWl=CotWilThresh, 
+                             DougF=DougFirThresh, Krumm=KrummThresh,
+                             Lodge=LodgeThresh, Pondr=PonderThresh, 
+                             SprFr=SprFirThresh,
+                             Sens=as.integer(ctt8[1]*1000)/1000.0, 
+                             Spec=as.integer(ctt8[2]*1000)/1000.0, 
+                             SensPlusSpec=tsum)
+  
+  resultSummary$Aspen=as.double(resultSummary$Aspen)
+  resultSummary$CotWl=as.double(resultSummary$CotWl)
+  resultSummary$DougF=as.double(resultSummary$DougF)
+  resultSummary$Krumm=as.double(resultSummary$Krumm)
+  resultSummary$Lodge=as.double(resultSummary$Lodge)
+  resultSummary$Pondr=as.double(resultSummary$Pondr)
+  resultSummary$SprFr=as.double(resultSummary$SprFr)  
+  resultSummary$Sens=as.double(resultSummary$Sens)
+  resultSummary$Spec=as.double(resultSummary$Spec)
+  resultSummary$SensPlusSpec=as.double(resultSummary$SensPlusSpec)
+```
+
+A Summary of the different models is shown below.
+
+```{r "resultSummary"}
+  resultSummary
+```
+  
+The 6th model looks the best from a statistics point of view but no aspen
+are predicted in this model. The 9th model will be used on the test data
+to report the model performance.
+
+## Apply Preferred Model to Test Data
+  
+```{r "Apply chosen model to test data"}
+
+  indx=9
+
+  ctt9=calcTreeTypes(forestTest,       # tree data set
+                4,                # mode
+               resultSummary$Aspen[indx],
+               resultSummary$CotWl[indx],
+               resultSummary$DougF[indx],
+               resultSummary$Krumm[indx],
+               resultSummary$Lodge[indx],
+               resultSummary$Pondr[indx],
+               resultSummary$SprFr[indx]
+               )
+
+  ctt9
+  
+  tsum=as.integer((ctt9[1]+ctt9[2])*1000)/1000.0
+  resultSummary[nrow(resultSummary)+1,]<- 
+                  c("LoSpec-All Test", 
+                   Aspen=resultSummary$Aspen[indx], CotWl=resultSummary$CotWl[indx], 
+                   DougF=resultSummary$DougF[indx], Krumm=resultSummary$Krumm[indx],
+                   Lodge=resultSummary$Lodge[indx], Pondr=resultSummary$Pondr[indx], 
+                   SprFr=resultSummary$SprFr[indx],
+                   Sens=as.integer(ctt9[1]*1000)/1000.0, 
+                   Spec=as.integer(ctt9[2]*1000)/1000.0, 
+                   SensPlusSpec=tsum)
+  
+  resultSummary
+  
+```
+
+The performance of the model strategy on the test data is nearly the 
+same as the training data. This is not surprising since the large amount
+of data allows a similar distribution of data features between the training
+and test sets using the split function.
+
+# Conclusion
+
+The accuracy of the model with the best sensitivity and specificity is
+`r ctt9[3]` which is about 1.5% less than the 70% accuracy of the neural network
+that this project is based. It does not improve on the accuracy of the
+neural network but comes very close.
+
+Looking at the model performance during the individual model build phase
+it looked like the overall performance could perform better than
+the neural network. But the performance of the combined models ould not be
+predicted. They had to be combined to determine the overall performance.
+
+While the neural network gives the better result, building and comparing
+the logistic models helps show which features are important to 
+predict the model coverage and would be recommended even if
+the logistic regression models are not to be used.
+
+```{r "Save Files"}
+#out2file="C:/Users/Tom/git/datasciencefoundation/ForestCoverage/forestTestPredict.csv"
+#write.csv(forestTest, file=out2file,row.names=FALSE)
+```

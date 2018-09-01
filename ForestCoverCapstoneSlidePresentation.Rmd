@@ -1,0 +1,229 @@
+---
+title: "Forest Cover Capstone Presentation"
+author: "Tom Thorpe"
+date: "August 31, 2018"
+output:
+  ioslides_presentation: default
+  beamer_presentation: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+## Objective
+
++ Predict forest coverage (tree name) based on physical environmental data from four
+wilderness areas in Colorado
++ Apply techniques learned during Springboard Data Science Foundation Course to real world data
+    - Data Cleaning
+    - Data Exploration
+    - Data Transformation
+    - Model Creation
+    - Feature Prediction
+
+## Research History
+
++ 1998 - Dr. Jock Blackard uses neural network to increase tree prediction accuracy over
+Discriminant Analysis from 58% to 70%
+    - (See: <https://archive.ics.uci.edu/ml/machine-learning-databases/covtype/>)
+    - (Data can also be found here)
++ 2015 - Kaggle competition top 15 entries range from 84% accuracy to 100% accuracy.
+    - (See: <https://www.slideshare.net/danielgribel/forest-cover-type-prediction-56288946>)
+    - Methodologies were not discussed
+
+## Data
+
+* Outcome tree types: Aspen, Cottonwood/Willow, Douglas Fir, Krummholz, 
+Lodgepole Pine, Ponderosa Pine, Spruce / Fir
+* CSV file containing 580,012 rows of environmental data
+    + Elevation (meters) of 30 meter by 30 meter land area cell
+    + Slope - angle of terrain from 0 to 90 degrees
+    + Aspect - compass direction the land cell faces
+    + Water - horizontal and vertical distance (meters) to water features
+    + Fire - horizontal distance (meters) to fire features
+    + Shade - at 9AM, Noon and 3PM, a 0-255 pixel value 
+    + Soil Type - 40 categories aggregating Soil Family, Rock Type, USFS_Code (Climate & Geology)
+
+## Data Validation and Cleaning
+
+* Validated Binary Data had exactly one entry per row for
+    + Wilderness Area
+    + Soil Type
+* Ensure non-binary data ranges are valid
+ 
+## Data Validation - Non-binary Data
+
+ Data   | min | mean | median | max
+ -------|-----|------|--------|----
+ Elev (m)| 1859 |2959| 2996 |3858
+ Aspect| 0 |155| 127| 360
+ Slope| 0 |14|13| 66
+ H2OVD (m) |-173| 46| 30| 601
+ FirePtHD (m)| 0| 1980| 1710 |7173
+ Shade9AM |0| 212| 218| 254
+ 
+## Soil Type
+
+* Question: Could breaking out the Soil Type into it's constituent parts 
+allow finer tuning of model leading to greater accuracy?
+* Soil Type Description Example:
+    + "4703 USFS Code - Bullwark - Catamount families - Rock outcrop complex rubbly"
+    + Split out into:
+        - USFS Code 4703: Montane Climate Zone, Igneous Metamorpic Geologic Zone
+        - Bullwark soil family
+        - Catamount soil family
+        - Rock Outcrop Complex rock type
+
+## Data Exploration - Elevation
+
+![Elevation Histogram](Fig-Elev-Histogram_resize.jpg)\ 
+
+* Elevation has a nearly normal Distribution
+
+## Tree Type vs Elevation Density
+
+![Elevation Density by Coverage Type](Fig-Elev-Density-CovType-Offset_resize.jpg)\ 
+
+* Elevation can help determine tree type
+
+## Coverage Frequency vs Climate
+
+![Coverage Frequency vs Climate](Fig-Cover-Vs-Climate-Freq-3D_resize.jpg)\ 
+
+* Climate plays a varying role to determine tree type
+
+
+## Tree Coverage vs Aspect
+
+![Tree Coverage vs Aspect](Fig-Aspect-Density-CovType-Offset_resize.jpg)\ 
+
+* Aspect appears to have little effect on tree type
+
+## Prediction Methodology
+
+* Logistic Regression can only produce a true/false result
+* Develop logistic regression models for each tree type on training data
+* Final Model: Apply logistic models to data in a specific order
+    + Highest Sensitivity first - only update if not already set
+    + Lowest Specificity first - update even if already set
+* Find best threshold for each model to produce best Final Model result
+* Apply Final Model to test data
+
+## Thresholds varied by Tree Model
+
+ Model Description|Base  | Acc | Sens| Spec| AUC|  Count| Thresh
+ -----------------|------|-----|-----|-----|----|-------|------
+ Ponderosa Agg    | 93%  | 92% | 97% | 91% | 97%|  10726| 0.082
+ Ponderosa Ind    | 93%  | 92% | 97% | 92% | 98%|  10726| 0.068
+ Douglas Fir Agg  | 97%  | 87% | 97% | 86% | 95%|   5210| 0.033
+ Cotton/Willow Agg| 99%  | 95% | 94% | 95% | 98%|    824| 0.008
+ Aspen Ind        | 98%  | 68% | 93% | 68% | 87%|   2848| 0.011
+ Lodgepole Agg    | 51%  | 75% | 79% | 72% | 82%|  84990| 0.482
+ Spruce/Fir Agg   | 63%  | 73% | 87% | 66% | 83%|  63552| 0.307
+ Weighted Average |      | 76% | 84% | 72% |    | 174303|      
+ 
+
+## Highest Sensitivity First - Confusion Matrix
+
+  Tree   |Aspen_Pre| Cot&Wil| DougFir| Krumm |Lodge|Ponder |Spr&Fir
+ --------|--------|--------|---------|-------|-----|-------|------
+ Aspen_Act| 0| 6 |154 |0 |5870 |471| 144
+ Cot&Wil |0 |1 |25| 0| 9 |1873| 0
+ DougFir |0 |78 |2230| 0 |1554 |8283| 0
+ Krumm |0| 0| 0| 8748| 974| 56| 4554
+ Lodge |0 |29| 3583 |326 |142076| 4946| 47351
+ Ponder |0 |23 |682| 0 |2312| 21888| 0
+ SprFir |0 |51 |415| 7146| 33741 |103| 106816
+ 
+## Highest Sensitivity First - Stats
+ 
+  Tree |TP| FP| FN| TN |Accuracy| Sensitivity| Specificity
+ ------|--|---|---|----|---|-----|-----       
+ Aspen| 0| 0 |6645| 399873| 0.9836539| 0.000000000 |1.0000000
+ CotWill| 1| 187 |1907| 404423| 0.9948489 |0.000524109 |0.9995378
+ Ponder| 21888 |15732| 3017 |365881| 0.9538790| 0.878859667| 0.9587750
+ SpruceFir| 106816 |52049 |41456 |206197| 0.7699856| 0.720405741| 0.7984519
+ 
+  Weighted Avg Sens= 0.692777882958086
+  
+  Weighted Avg Spec= 0.818366298037202
+  
+  Accuracy = 0.692777882958086 
+
+## Lowest Specificity First - Confusion Matrix
+
+  Tree   |Aspen_Pre| Cot&Wil| DougFir| Krumm |Lodge|Ponder |Spr&Fir
+ --------|--------|--------|---------|-------|-----|-------|------
+ Aspen_Act| 260| 0| 119| 0| 5126| 551| 585
+ Cot&Wil| 0 |119| 8| 0| 0 |1772| 3
+ DougFir| 105| 0 |1778| 0 |1095| 8877| 292
+ Krumm| 57| 0 |0| 8272| 80| 56| 5892
+ Lodge| 2187| 0| 3231| 270| 140331| 5959| 46250
+ Ponder| 581| 60 |503| 0 |705| 22392| 624
+ SprFir| 1553| 0| 406| 6292| 34866 |118| 105053
+ 
+## Lowest Specificity First - Stats
+ 
+  Tree |TP| FP| FN| TN |Accuracy| Sensitivity| Specificity
+ ------|--|---|---|----|---|-----|-----       
+ Aspen| 260| 4483| 6381| 395304 |0.9732696 |0.03915073| 0.9887865
+ CotWill| 119| 60 |1783| 404466| 0.9954654| 0.06256572| 0.9998517
+ Ponder| 22392| 17333| 2473| 364230| 0.9512681| 0.90054293| 0.9545737
+ SpruceFir| 105053| 53646| 43235 |204494 |0.7616281| 0.70843898| 0.7921825
+   
+   Weighted Avg Sens= 0.684039448352508
+   
+   Weighted Avg Spec= 0.82164066329442
+   
+   Accuracy = 0.684039448352508
+   
+## Prediction Method Comparison
+
+* Highest Sensitivity First Method
+    + Slightly Higher Accuracy of 69.3%
+    + Does not predict any Aspen and only 1 Cottonwood/Willow
+* Lowest Specificity First Method
+    + Slightly Lower Accuracy of 68.4%
+    + Predicts more Aspen and Cottonwood/Willow
+    
+* Choose Lowest Specificity Method for Testing Set
+
+## Testing Set - Confusion Matrix
+
+   Tree  |Aspen_Pre| Cot&Wil| DougFir| Krumm |Lodge|Ponder |Spr&Fir
+ --------|--------|--------|---------|-------|-----|-------|------
+ Aspen_Act| 121 |0 |50| 0| 2199 |237| 240
+ Cot&Wil| 0| 38| 9| 0| 0| 769| 0
+ DougFir| 44| 0 |781 |0 |491| 3772| 116
+ Krumm| 24 |0 |0 |3495 |38 |22| 2574
+ Lodge| 954| 0 |1485| 99| 60175| 2533 |19706
+ Ponder| 236| 18| 224| 0 |331| 9587| 257
+ SprFir| 633| 0| 162| 2805| 14617| 52 |45283
+ 
+## Testing Set - Stats
+ 
+  Tree |TP| FP| FN| TN |Accuracy| Sensitivity| Specificity
+ ------|--|---|---|----|---|-----|-----       
+ Aspen| 121| 1891 |2726| 169439| 0.9734925| 0.04250088 |0.9889628
+ CotWill| 38| 18| 778| 173343| 0.9954299| 0.04656863| 0.9998962
+ Ponder| 9587| 7385| 1066| 156139| 0.9514804| 0.89993429| 0.9548384
+ SpruceFir| 45283| 22893| 18269| 87732| 0.7636772 |0.71253462| 0.7930576
+   
+   Weighted Avg Sens= 0.685472998169854
+   
+   Weighted Avg Spec= 0.823379445775709
+   
+   Accuracy = 0.685472998169854
+   
+## Conclusion
+
+* 7 Combined Logistic Regression Model Performance
+    + Achieved 68.5% Accuracy
+    + 10% better than Discriminant Analysis
+    + 1.5% worse than Neural Network
+    + Did not come close to the top Kaggle competitor of 100%
+* Thoughts on Logistic Regression     
+    + Gives insight into which variables are important for prediction
+    + Weighted individual model performance does not give a good indication
+of combined model performance    

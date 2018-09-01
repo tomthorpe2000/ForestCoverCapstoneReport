@@ -1,0 +1,1141 @@
+---
+title: "Capstone Data Logistic Regression - Predict Spruce and Fir"
+author: "Tom Thorpe"
+date: "July 25, 2018"
+output:
+  pdf_document: default
+  word_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+#knitr::opts_chunk$set(echo = FALSE,message = FALSE)
+knitr::opts_chunk$set(echo = TRUE)
+
+#library(memisc, warn.conflicts = FALSE, quietly=TRUE)
+#suppressMessages(library(memisc, warn.conflicts = FALSE, quietly=TRUE))
+```
+
+# Objective
+
+Use Logistic regression to predict tree coverage.
+
+
+```{r}
+# Include required libraries.
+
+library(gsubfn)
+library(dplyr)
+library(ggplot2)
+library(ggridges) # for easier viewing of sub-group distributions
+library(ROCR)
+suppressMessages(library(latticeExtra, warn.conflicts = FALSE, quietly=TRUE))
+#library(latticeExtra)
+
+  curTime=Sys.time()
+  print(paste("Forest Cover Logistic script started at",curTime))
+
+#Point to data. The forestcover_clean_full.csv is the cleaned data to be graphed. 
+  
+calcROC <- 1  
+saveFileName="ForestCoverLogisticStats.csv"
+
+infile="C:/Users/Tom/git/datasciencefoundation/ForestCoverage/forestcover_clean_full.csv"
+#infile="C:/Users/Tom/git/datasciencefoundation/ForestCoverage/forestcover_clean.csv"
+#infile="C:/Users/Tom/git/datasciencefoundation/ForestCoverage/forestcoversmall_clean_full.csv"
+#infile="C:/Users/Tom/git/datasciencefoundation/ForestCoverage/forestcoversmall_clean.csv"
+out2file="C:/Users/Tom/git/datasciencefoundation/ForestCoverage/forestcover_graph.csv"
+#out1file="C:/Users/Tom/git/datasciencefoundation/ForestCoverage/forestcoversmall_clean_full.csv"
+#out2file="C:/Users/Tom/git/datasciencefoundation/ForestCoverage/forestcoversmall_clean.csv"
+
+alphaVal<-0.05 # large data
+#alphaVal<-0.1  # small data
+```
+
+
+```{r "Load Data"}
+
+forestcover <- read.csv(infile,header=TRUE,sep=",") %>% tbl_df()
+  curTime=Sys.time()
+  print(paste("Forest Cover data load completed at",curTime))
+
+forestcover$SoilType<-as.factor(forestcover$SoilType)
+forestcover$ClimateZone<-as.factor(forestcover$ClimateZone)
+forestcover$GeoZone<-as.factor(forestcover$GeoZone)
+
+# glimpse(forestcover)
+
+# table(forestcover$Sed_mix)
+#knitr::knit_exit()
+
+# Coverage binary outcome Vars:
+# Aspen
+# Cottonwood_Willow
+# DouglasFir
+# Krummholz
+# LodgepolePine
+# PonderosaPine
+# Spruce_Fir
+
+
+```
+A table showing the number of occurrences for each tree type is shown below.
+```{r}
+
+covCount<-data.frame(table(forestcover$CovName))
+totCount<-nrow(forestcover)
+covCount <- mutate(covCount,Percent = as.integer(covCount$Freq*1000/totCount)/10)
+LodgePct<-covCount$Percent[covCount$Var1=="Lodgepole"]
+SpruceAndFirPct<-covCount$Percent[covCount$Var1=="Spruce&Fir"]
+LodgeAndSpruceAndFir<-LodgePct+SpruceAndFirPct
+#```
+#```{r echo=TRUE}
+covCount
+```
+
+Lodge pole Pine represents `r LodgePct` percent of the sample.
+So always guessing "Lodge pole" would provide success rate of `r LodgePct` percent
+and can be used as a baseline for comparing our predictions. Spruce & Fir represent the next 
+largest number of trees. The two together represent `r LodgeAndSpruceAndFir` percent.
+
+# Logistic Model Accuracy Function
+
+A function to help determine threshold for best accuracy and testing is shown below.
+
+```{r "Logsitic Model Accuracy Function"}
+#load("logisticAccuracy.Rdata")
+
+calcLogisticModelAccuracy <- function(actualValues, predictedValues, 
+                         thresholdStart, thresholdEnd, thresholdParts,
+                         positiveLabel, negativeLabel, printLevel,
+                         findThreshold=0, 
+                         saveFile="", desc="LogisticStats", AIC=NA, AUC=NA, Append=TRUE) {
+  # Description
+  #   -Calculate accuracy of logistic regression model
+  #   -depending on print level option:
+  #      print accuracy of logistic model and baseline model
+  #      print confusion matrix
+  #      print sensitivity and specificty
+  #
+  # Input Values
+  #   -actualValues = actual values of outcome variables, a vector of 0's and 1's
+  #   -predictedValues = logistic model predicted probalilities between 0 and 1
+  #   -thresholdStart = threshold initial value for applying to predicted values
+  #      to determine predicted outcome
+  #   -thresholdEnd = end value for incrementing the threshold 
+  #   -thresholdParts = number of partitions to apply threshold values between
+  #      thresholdStart and thresholdEnd
+  #   -positiveLabel = text to label true outcomes. This will be displayed
+  #      on the confusion matrix when the print level is greater than 1.
+  #   -negativeLable = text to label false outcomes. This will be displayed
+  #      on the confusion matrix when the print level is greater than 1.
+  #   -printLevel = level of detail printed by calcLogisticModelAccuracy
+  #      0 - no printed output unless and error is encountered
+  #      1 - print threshold, logistic model accuracy and baseline accuracy
+  #      2 - Print level 1 and confusion matrix and sensitivity and specificity values
+  #      3 - Print level 2 and details of sensitivity and specificity calculations
+  #      4 - Print level 3 and debug information
+  # -findThreshold 
+  #      1 - search for threshold producing best sensitivity and specificity combination
+  #      2 - search for threshold producing best accuracy
+  #
+  # Return Values
+  #   -function status: 
+  #      - "OK":function completed without errors
+  #      - "ERROR": function did not complete, and error information
+  #         See other variables for possible additional error information
+  #   -logistic model accuracy based on last threshold value tested
+  #   -baseline model accuracy based on last threshold value tested
+  #   -confusion matrix values in following order: TN, FN, FP, TP
+  #   -sensitivity
+  #   -specificity
+  
+  # x <- data.frame('1', 'ab', 'username', '<some.sentence>', '2017-05-04T00:51:35Z', '24')
+  # write.table(x, file = "Tweets.csv", sep = ",", append = TRUE, quote = FALSE,
+  #  col.names = FALSE, row.names = FALSE)
+  if (saveFile != "") {
+    if (!file.exists(saveFile) | Append == FALSE){
+       if (file.exists(saveFile)) { file.remove(saveFile) }
+       x <- data.frame('Description', 'TrueLabel', 'FalseLabel', 'BaselineLabel',
+        'BaselineAcc', 'Accuracy', 'Sensitivity', 'Specificity', 
+        'AIC', 'AUC%', 'TP', 'FN', 'FP','TN', 'Count', 'Threshold' )
+       write.table(x, file=saveFile, sep=",", quote=FALSE,
+         col.names = FALSE, row.names = FALSE)
+    }
+  }
+  
+  # set default values in case of errors
+  accuracy=baseline=retVal="ERROR"
+  more=1
+  bestLabel="Sensitivity_Specificity"
+  SensSpec = -1
+  
+  bestAccuracy=bestThreshold=NA # set default values for bestThreshold calcs
+  
+  if (findThreshold) {
+    thresholdStart=0.0
+    thresholdEnd=1.0
+    thresholdParts=10
+    more=3 # allows calculation to find threshold to nearest 0.001
+    bestAccuracy=bestThreshold=-1.0
+    if (findThreshold == 2) { bestLabel = "Accuracy" }
+    print (paste("Searching for threshold producing best",bestLabel))
+  }
+  
+  # Calculate increment value to iterate through the threshold values
+  if ( thresholdParts ==0) { thresholdParts = 1 }
+  if ( thresholdParts < 0) { thresholdParts = - thresholdParts }
+  thresholdInc = (thresholdEnd - thresholdStart) / thresholdParts
+  if (thresholdStart==thresholdEnd | thresholdParts < 2) {
+    thresholdEnd=thresholdStart
+    thresholdInc=1
+  }
+  threshold=thresholdStart
+  
+  if (findThreshold) {
+    print(paste("start=",thresholdStart,"end=",thresholdEnd,"inc=",thresholdInc)) 
+  }
+  
+  funcStat="OK"
+  
+  workPerformance = table(actualValues, predictedValues > threshold)
+  
+  for (row in rownames(workPerformance)) {
+    if(row != "0" & row != "1") { 
+      funcStat=paste("ERROR:Bad row name:",row,",must be '0' or '1'")}
+  }
+  for (col in colnames(workPerformance)) {
+    if(col != "TRUE" & col != "FALSE") { 
+      funcStat=paste("ERROR:Bad column name:",col,", must be 'TRUE' or 'FALSE'")}
+  }
+  
+  if (funcStat=="OK") {
+    while (more) {
+    repeat {
+      
+      if (thresholdParts>1 & printLevel > 1) { print("----------")}
+      
+      workPerformance = table(actualValues, predictedValues > threshold)
+  
+      # create a modelPerformance table and set all the values to zero.
+      # This ensures a 2x2 matrix in case the threshold causes all values predicted
+      # to be TRUE or FALSE values and produces a 2x1 vector.
+      # The table of actual and predicted values with be copied into the
+      # modelPerformance table later.
+      Actual = c(0, 1)
+      Predicted = c(FALSE, TRUE )
+      modelPerformance = table(Actual,Predicted)
+      modelPerformance["0","TRUE"]=0
+      modelPerformance["0","FALSE"]=0
+      modelPerformance["1","FALSE"]=0
+      modelPerformance["1","TRUE"]=0
+  
+      # Descriptions         | Predict Good Care (0) | Predict Poor Care (1)  
+      # ---------------------|-----------------------|----------------------
+      # Actual Good Care (0) |     TN (true neg)     |   FP (false pos)
+      # Actual Poor Care (1) |     FN (false neg)    |   TP (true pos)
+    
+      # Remember: 0 means negative which means Good care, 
+      #           1 means positive which means Poor care 
+      #   (Opposite of intuition)
+
+      # Sensitivity = TP / (TP + FN) = percent of true positives identified
+
+      # Specificity = TN / (TN + FP) = percent of true negatives identified
+  
+      # transfer the workPerformance table to the final performance table
+      for (row in rownames(workPerformance)) {
+        for (col in colnames(workPerformance)) {
+          modelPerformance[row,col]=workPerformance[row,col]
+          if (printLevel > 3) { print(paste("workPerformance[",row,",",col,"]=",
+                                        workPerformance[row,col]))}
+        }
+      }
+  
+      if (printLevel > 3) {print(modelPerformance) }
+  
+      #                  Actual,Prediction
+      TP = modelPerformance["1","TRUE"]  # Predicted True (1),  and actually TRUE (1) = True Positive
+      FN = modelPerformance["1","FALSE"] # Predicted False (0), but actually TRUE (1) = False 0/Negative
+  
+      TN = modelPerformance["0","FALSE"] # Predicted False (0), and actually False (0) = True Negative
+      FP = modelPerformance["0","TRUE"] # Predicted True (1), but actually False (0) = False 1/Positive
+  
+      # Prevent and report divide by zero error
+      if (TP+FN == 0) {
+        sensitivity="ERROR:TP+FN=0"
+        funcStat=sensitivity
+      } else { sensitivity = TP / (TP + FN ) }
+  
+      # Prevent and report divide by zero error
+      if (TN+FP == 0) {
+        specificity="ERROR:TN+FP=0"
+        funcStat=specificity
+      } else { specificity = TN / (TN + FP) }
+      
+      if (funcStat == "OK") { # calc SensSpec
+        if (sensitivity > 0.0 & sensitivity < 1.0) {
+            SensSpec=sensitivity^2 + specificity^2
+        } else { SensSpec = -2.0 }
+            printSensSpec=as.integer(SensSpec*1000)/1000
+      }
+  
+      retVal = c(modelPerformance, sensitivity,specificity) # TN, FN, FP, TP, sens, spec
+ 
+      if (printLevel > 1) {
+        modelPerformance["1","TRUE"]  = paste("   ",modelPerformance["1","TRUE"], "(TP)")
+        modelPerformance["1","FALSE"] = paste("   ",modelPerformance["1","FALSE"],"(FN)")
+        modelPerformance["0","FALSE"] = paste("   ",modelPerformance["0","FALSE"],"(TN)")
+        modelPerformance["0","TRUE"]  = paste("   ",modelPerformance["0","TRUE"], "(FP)")
+      }
+  
+      c1=paste("FALSE=Predict:",negativeLabel,sep="")
+      c2=paste("TRUE=Predict:",positiveLabel,sep="")
+      r1=paste("0=Actual:",negativeLabel,sep="")
+      r2=paste("1=Actual:",positiveLabel,sep="")
+      colnames(modelPerformance) <- c(c1,c2)
+      rownames(modelPerformance) <- c(r1,r2) 
+  
+      if (printLevel > 1) {
+        print(paste("Model Performance for threshold=", threshold))
+        print("predicted performance=")
+        print(modelPerformance)
+    
+        sensPrint=paste("Sensitivity=",sensitivity,"(True positive rate of",positiveLabel)
+    
+        specPrint=paste("Specificity=",specificity,"(True negative rate of",negativeLabel)
+    
+        if (printLevel > 2 ) {
+          sensPrint=paste(sensPrint,"= TP/(TP+FN) =",TP,"/(",TP,"+",FN,"))")
+          specPrint=paste(specPrint,"= TN/(TN+FP) =",TN,"/(",TN,"+",FP,"))")
+        }
+    
+        print(sensPrint)
+        print(specPrint)
+      }
+    
+      # Calculate actual true and actual false totals to calculate baseline accuracy
+      # and logistic model accuracy
+      totSamples=TP+FN+TN+FP
+      actTrue=TP+FN
+      actFalse=TN+FP
+  
+      # double check there were actually some non-zero values  
+      if (totSamples>0) {
+        if (actTrue > actFalse) { 
+          baseline = actTrue / totSamples 
+          baseModel= positiveLabel
+        } else { 
+          baseline = actFalse / totSamples 
+          baseModel=negativeLabel
+        }
+        
+        # the accuracy is the number of TRUE positives and True negatives 
+        # divided by the number of samples
+        accuracy=(TP+TN)/totSamples
+        if (findThreshold)  {
+          if (findThreshold == 2) {
+            if (accuracy > bestAccuracy) {
+              bestAccuracy=accuracy
+              bestThreshold=threshold
+            } 
+          } else {
+            if (SensSpec > bestAccuracy) {
+              bestAccuracy=SensSpec
+              bestThreshold=threshold
+            }
+          }
+        }
+      } else {
+        baseModel="ERROR:0 samples"
+        baseline="ERROR:0 samples"
+        accuracy="ERROR:0 samples"
+        funcStat=accuracy
+      }
+  
+      if (printLevel > 0) {
+        
+        printAcc=(as.integer(accuracy*1000000))/1000000
+        printbaseline=(as.integer(baseline*1000000))/1000000
+    
+        if (printLevel > 1) {
+          print(paste("Sens^2+Spec^2=",printSensSpec,sep=""))
+          print(paste("Baseline (",baseModel,") Accuracy=",printbaseline,sep=""))
+          print(paste("Logistic Accuracy=",printAcc,sep=""))
+        } else {
+          print(paste("Thresh=",threshold,
+                ", Accuracy=",as.integer(accuracy*1000)/10,
+                "%, BaseAcc(",baseModel,")=",as.integer(baseline*1000)/10,
+                "%, Sens=",as.integer(sensitivity*1000)/10,
+                "%, Spec=",as.integer(specificity*1000)/10,
+                "%, Sens^2+Spec^2=",printSensSpec,
+                sep=""))
+        }
+      }
+
+      # c(funcStat,accuracy,baseline,retVal)
+      
+      #print(paste("threshold=",threshold,",End=",thresholdEnd,",Inc=",thresholdInc))
+  
+      threshold=threshold+thresholdInc
+      if(thresholdEnd < thresholdStart) {
+        if (threshold < thresholdEnd) { break}
+      } else { if (threshold > thresholdEnd) { break} }
+  
+    } # end repeat
+      
+      more=more-1
+      
+      if (findThreshold & more) {
+        print(paste("Best",bestLabel,"threshold=",bestThreshold,"inc=",thresholdInc))
+        thresholdStart = bestThreshold - thresholdInc
+        if (thresholdStart < 0.0) { thresholdStart = 0.0 }
+        thresholdEnd = bestThreshold + thresholdInc
+        if (thresholdEnd > 1.0) { thresholdEnd = 1.0 }
+        thresholdInc = (thresholdEnd - thresholdStart) / 20.0
+        threshold=thresholdStart
+        print("========================================")
+        print(paste("start=",thresholdStart,"end=",thresholdEnd,"inc=",thresholdInc))
+      }
+    } # end while
+    
+    if (findThreshold) {
+      print("========================================")
+      print(paste("Best Threshold=",bestThreshold,sep=""))
+      print(paste("Best ",bestLabel,"=",bestAccuracy,sep=""))
+    }
+  } else { 
+    # Had an error, just return the error information
+    print(funcStat)
+  }
+  
+  # x <- data.frame('Description', 'TrueLabel', 'FalseLabel', 'BaselineLabel',
+  #      'BaseLineAcc', 'Accuracy', 'Sensitivity', 'Specificity', 
+  #      'AIC', 'AUC', 'TP', 'FN', 'TP','TN', 'Count' )
+  if (saveFile != "" & funcStat == "OK") {
+    threshold=threshold-thresholdInc
+    x <-data.frame(desc, positiveLabel,negativeLabel, baseModel,
+      baseline, accuracy, sensitivity, specificity, 
+      AIC, AUC, TP, FN, FP,TN, totSamples, threshold)
+    write.table(x, file=saveFile, sep=",", append=TRUE, quote=FALSE,
+      col.names = FALSE, row.names = FALSE)
+  }
+  
+  c(funcStat,accuracy,baseline,retVal,bestAccuracy,bestThreshold)
+}
+bestThreshIndex=11
+#save("calcLogisticModelAccuracy", file="logisticAccuracy.Rdata")
+# OR
+# dump("add2", file="myFunction.R")
+dump("calcLogisticModelAccuracy", file="logisticAccuracy.R")
+
+## Then in a subsequent R session
+# source("logisticAccuracy.R")
+```
+
+# Create Training and Testing Sets
+
+Split data into training and testing data for logistic regression.
+The split is based on cover type so that the different coverage types
+will be split proportionately for all cover types in the training and test sets.
+
+```{r "SprFir: Split Data into training and test"}
+library(caTools)
+set.seed(127)
+split = sample.split(forestcover$CovType, 0.70) # we want 65% in the training set
+forestTrain = subset(forestcover, split == TRUE)
+forestTest  = subset(forestcover, split == FALSE)
+```
+Check training set coverage percentages and compare with test set to ensure
+there is a representative amount of data in each set for each coverage type.
+
+#### View Training Set Coverage Percentages
+
+Check training set coverage percentages.
+
+```{r "Calc Training Set coverages"}
+covCount<-data.frame(table(forestTrain$CovName))
+totCount<-nrow(forestTrain)
+covCount <- mutate(covCount,Percent = as.integer(covCount$Freq*1000/totCount)/10)
+covCount
+```
+
+#### View Test Set Coverage Percentages
+
+Check test set coverage percentages.
+```{r "Calc Test Set coverages"}
+covCount<-data.frame(table(forestTest$CovName))
+totCount<-nrow(forestTest)
+covCount <- mutate(covCount,Percent = as.integer(covCount$Freq*1000/totCount)/10)
+covCount
+
+# knitr::knit_exit() # exit early
+
+#glimpse(forestTrain)
+#glimpse(forestTest)
+#summary(forestTrain)
+#summary(forestTest)
+#table(forestTrain$Sed_mix)
+#table(forestTrain$GeoName)
+#table(forestTrain$Spruce_Fir)
+#table(forestTest$Spruce_Fir)
+
+# the above all work without error.
+
+#table(forestTest$Rock_Land) 
+# Get the following error with above code:
+#  Error in table(SpfFir_test$Rock_Land) : object 'SpfFir_test' not found
+#    Calls: <Anonymous> ... withCallingHandlers -> withVisible -> eval -> eval -> table
+
+
+#table(forestTrain$Rock_Land)
+#table(forestTest$Rock_Land)
+#table(forestTrain$Rubbly)
+#table(forestTest$Rubbly)
+
+#table(forestTrain$Sed_mix)
+#table(forestTrain$Gateview)
+#table(forestTrain$Rubbly)
+#table(forestTest$Sed_mix)
+#table(forestTest$Gateview)
+#table(forestTest$Rubbly)
+
+############# Start Start Start Start Start Start Start Start ##################
+```
+
+# Spruce and Fir Logistic Regression
+
+Logistic regression models are created and compared for the Spruce and Fir coverage type.
+The outcome is based on the binary 'Spruce_Fir' variable. 
+
+## Spruce and Fir Logistic Regression - All Variables
+
+### Create Spruce and Fir Logistic Model - All Vars
+
+Create the Spruce and Fir logistic model for the Aggregated Soil data 
+using all independent variables.
+
+#### Spruce and Fir All Aggregated Soil Types
+
+The original project used aggregated Soil Types. Compute a logistic
+regression model using the aggregated soil types to see how the 
+dis-aggregated / individuated variables compare.
+
+```{r "SprFir_Agg_all: Create Logistic Model with Aggregated Soil Types using all variables"}
+
+  # You can remove the levels of the factor variables using the option exclude:
+  #   lm(dependent ~ factor(independent1, exclude=c('b','d')) + independent2)
+  #   This way the factors b, d will not be included in the regression.
+
+  curTime=Sys.time()
+  print(paste("Spruce_Fir aggregated Logistic Model Calculation started at",curTime))
+  
+  SprFir_Agg_LogMod = 
+    glm(Spruce_Fir ~ 
+          Elev +     # Elevation in meters of data cell
+          Aspect +   # Direction in degrees slope faces
+          Slope +    # Slope / steepness of hill in degrees (0 to 90)
+          H2OHD +    # Horizontal distance in meters to nearest water
+          H2OVD +    # Vertical distance in meters to nearest water
+          RoadHD +   # Horizontal distance in meters to nearest road
+          FirePtHD + # Horizontal distance in meters to nearest fire point
+          Shade9AM + Shade12PM + Shade3PM + # Amount of shade at 9am, 12pm and 3pm
+          # Wilderness areas:
+            RWwild + NEwild + CMwild + CPwild + 
+          # Aggregated Soil type:
+            ST01 + ST02 + ST03 + ST04 + ST05 + ST06 + ST07 + ST08 + ST09 + ST10 +
+            ST11 + ST12 + ST13 + ST14 + ST15 + ST16 + ST17 + ST18 + ST19 + ST20 +
+            ST21 + ST22 + ST23 + ST24 + ST25 + ST26 + ST27 + ST28 + ST29 + ST30 +
+            ST31 + ST32 + ST33 + ST34 + ST35 + ST36 + ST37 + ST38 + ST39 + ST40 ,
+          data=forestTrain, family=binomial)
+  
+  SprFir_Agg_All_LogMod = SprFir_Agg_LogMod
+  save("SprFir_Agg_All_LogMod", file="SprFir_Agg_All_LogMod.Rdata")
+  
+  SprFir_Agg_All_aic<-as.integer(SprFir_Agg_LogMod$aic)
+  SprFir_Agg_All_aic
+  
+  curTime=Sys.time()
+  print(paste("Spruce_Fir aggregated Logistic Model Calculation completed at",curTime))
+```
+
+Check the coefficients for the Spruce and Fir model using all aggregated data.
+
+```{r "SprFir_Agg_All: Examine Logistic Model Output"}
+summary(SprFir_Agg_LogMod)
+```
+WOW! The intercept is huge and listed as not significant. 
+Wilderness area and several soil types are not significant and can be removed in 
+the next iteration.
+
+#### Spruce and Fir All Individuated Soil Types
+
+Create a logistic model using the Individuated variables that were 
+derived from the Soil Types. The Soil Type was the intersection of
+climate zone, geology zone, soil families, and rock content. These variables
+are used instead of the Soil types.
+
+```{r "SprFir_Ind_All: Create Logistic Model-Aggregated data split into Individual vars"}
+
+  curTime=Sys.time()
+  print(paste("Spruce_Fir Individual Logistic Model Calculation started at",curTime))
+
+  SprFir_Ind_LogMod = 
+    glm(Spruce_Fir ~ 
+          Elev +     # Elevation in meters of cell
+          Aspect +   # Direction in degrees slope faces
+          Slope +    # Slope / steepness of hill in degrees (0 to 90)
+          H2OHD +    # Horizontal distance in meters to nearest water
+          H2OVD +    # Vertical distance in meters to nearest water
+          RoadHD +   # Horizontal distance in meters to nearest road
+          FirePtHD + # Horizontal distance in meters to nearest fire point
+          Shade9AM + Shade12PM + Shade3PM + # Amount of shade at 9am, 12pm and 3pm
+          # Wilderness areas:
+            RWwild + NEwild + CMwild + CPwild +  
+          # Climate Zone:
+          # ClimateName + 
+            Montane_low + Montane + SubAlpine + Alpine + Dry + Non_Dry + 
+          # Geology Zone:
+          # GeoName +  
+            Alluvium + Glacial + Sed_mix + Ign_Meta + 
+          # Soil Family:
+            Aquolis_cmplx + Argiborolis_Pachic + Borohemists_cmplx + Bross + 
+            Bullwark + Bullwark_Cmplx + Catamount + Catamount_cmplx + 
+            Cathedral + Como + Cryaquepts_cmplx + Cryaquepts_Typic + Cryaquolls + 
+            Cryaquolls_cmplx + Cryaquolls_Typic + Cryaquolls_Typic_cmplx + 
+            Cryoborolis_cmplx + Cryorthents + Cryorthents_cmplx + Cryumbrepts + 
+            Cryumbrepts_cmplx + Gateview + Gothic + Granile + Haploborolis + 
+            Legault + Legault_cmplx + Leighcan + Leighcan_cmplx + Leighcan_warm + 
+            Moran + Ratake + Ratake_cmplx + Rogert + Supervisor_Limber_cmplx + 
+            Troutville + Unspecified + Vanet + Wetmore + 
+          # Soil Rock composition:
+            Bouldery_ext + Rock_Land + Rock_Land_cmplx + Rock_Outcrop + 
+            Rock_Outcrop_cmplx + Rubbly + Stony + Stony_extreme + Stony_very +
+            Till_Substratum ,
+          data=forestTrain, family=binomial)
+  
+  SprFir_Ind_All_LogMod = SprFir_Ind_LogMod
+  save("SprFir_Ind_All_LogMod", file="SprFir_Ind_All_LogMod.Rdata")
+
+  #table(forestTrain$GeoName)
+  #table(forestTrain$Sed_mix)
+  #table(forestTrain$Gateview)
+  # above: Error in table(SpfFir_test$Gateview) : object 'SpfFir_train' not found <-------
+
+  SprFir_Ind_All_aic<-as.integer(SprFir_Ind_LogMod$aic)
+  SprFir_Ind_All_aic
+  
+  summary(SprFir_Ind_LogMod)
+  
+  curTime=Sys.time()
+  print(paste("Spruce_Fir Individual Logistic Model Calculation completed at",curTime))
+
+  #table(forestTest$Rock_Land) 
+  # Get the following error with above code:
+  #  Error in table(SpfFir_test$Rock_Land) : object 'SpfFir_test' not found
+  #    Calls: <Anonymous> ... withCallingHandlers -> withVisible -> eval -> eval -> table
+```
+
+### Predict Spruce and Fir Logistic Model Probabilities - All Aggregated Vars
+
+#### Spruce and Fir Probabilities - All Aggregated Data
+
+Predict the probability of Spruce and Fir for aggregated Data - all variables.
+```{r "SprFir_Agg_All: Predict Spruce and Fir Agg Data - all variables"}
+
+# Predict Spruce and Fir Agg Data - all variables
+
+  SprFir_Agg_Train_predict= predict(SprFir_Agg_LogMod, type="response")
+  SprFir_Agg_Train_Logit= predict(SprFir_Agg_LogMod)
+  summary(SprFir_Agg_Train_predict)
+  str(SprFir_Agg_Train_predict)
+  #plot(table(SprFir_Agg_Train_predict))
+  #plot(table(SprFir_Agg_Train_Logit))
+  dens<-data.frame(table(SprFir_Agg_Train_predict))
+# str(dens)
+
+  SprFir_Agg_Test_predict= predict(SprFir_Agg_LogMod, type="response",newdata=forestTest)
+  summary(SprFir_Agg_Test_predict)
+   str(SprFir_Agg_Test_predict)
+```
+
+####  Spruce and Fir Probabilities - All Individuated Data
+
+Predict the probability of Spruce and Fir for Individual Data - all variables.
+
+```{r "SprFir_Ind_All: Predict Spruce and Fir Individual Data - all variables"}
+  SprFir_Ind_Train_predict= predict(SprFir_Ind_LogMod, type="response")
+  summary(SprFir_Ind_Train_predict)
+
+  SprFir_Ind_Test_predict= predict(SprFir_Ind_LogMod, type="response",newdata=forestTest)
+  summary(SprFir_Ind_Test_predict)
+```
+
+### Spruce and Fir Receiver Operating Characteristic (ROC) - All Vars
+
+#### Spruce and Fir Receiver ROC - All Aggregated Data
+
+Next, look at the True Positive and False Positive rates based on threshold value
+for the aggregated data.
+
+```{r "SprFir_Agg_All: ROC"}
+
+  if (calcROC) {
+    curTime=Sys.time()
+    print(paste("ROC graph 1 started at",curTime))
+  
+    ROCpred_SprFir_Agg = prediction(SprFir_Agg_Train_predict, forestTrain$Spruce_Fir)
+    summary(ROCpred_SprFir_Agg)
+    ROCperf_SprFir_Agg = performance(ROCpred_SprFir_Agg, "tpr", "fpr")
+    summary(ROCperf_SprFir_Agg)
+    
+    SprFir_Agg_All_ROC_AUC = as.numeric(performance(ROCpred_SprFir_Agg, "auc")@y.values)
+    SprFir_Agg_All_ROC_AUC=as.integer(as.numeric(SprFir_Agg_All_ROC_AUC)*1000)/10
+    print(paste("SprFir_Agg_All_ROC_AUC=",SprFir_Agg_All_ROC_AUC))
+    
+    jpeg(filename="Fig-ROCR_perf_SprFir_Agg.jpg")
+    plot(ROCperf_SprFir_Agg, colorize=TRUE, print.cutoffs.at=seq(0,1,0.1), text.adj=c(-0.2,1.7))
+    dev.off()
+  } else {
+    SprFir_Agg_All_ROC_AUC = 84.2
+  }
+```
+![Spruce and Fir ROC for All Aggregated Data](Fig-ROCR_perf_SprFir_Agg.jpg)
+
+#### Spruce and Fir Receiver ROC - All Individuated Data
+
+The Response Operating Curve for the individuated data is shown below.
+```{r "SprFir_Ind_All: ROC"}
+
+  if (calcROC) {
+    curTime=Sys.time()
+    print(paste("ROCR graph 2 started at",curTime))
+
+    ROCpred_SprFir_Ind = prediction(SprFir_Ind_Train_predict, forestTrain$Spruce_Fir)
+    summary(ROCpred_SprFir_Ind)
+    ROCperf_SprFir_Ind = performance(ROCpred_SprFir_Ind, "tpr", "fpr")
+    summary(ROCperf_SprFir_Ind)
+    
+    SprFir_Ind_All_ROC_AUC = as.numeric(performance(ROCpred_SprFir_Ind, "auc")@y.values)
+    SprFir_Ind_All_ROC_AUC=as.integer(as.numeric(SprFir_Ind_All_ROC_AUC)*1000)/10
+    print(paste("SprFir_Ind_All_ROC_AUC=",SprFir_Ind_All_ROC_AUC))
+
+    jpeg(filename="Fig-ROCR_perf_SprFir_Ind.jpg")
+    plot(ROCperf_SprFir_Ind, colorize=TRUE, print.cutoffs.at=seq(0,1,0.1), text.adj=c(-0.2,1.7))
+    dev.off()
+  } else {
+    SprFir_Ind_All_ROC_AUC = 84.2
+  }
+```  
+
+![Spruce and Fir ROC for All Individuated Data](Fig-ROCR_perf_SprFir_Ind.jpg)
+
+The threshold graphs are essentially identical.
+This is making me think that there is not much difference between the 
+two models.  The AIC score for the Soil Type model is AIC: 351676 and for the 
+individuated variables is: AIC: 351839. The Soil type model AIC score is 0.046% better
+than the individuated model.
+```{r "ROCR2"}
+  curTime=Sys.time()
+  print(paste("ROCR graph 2 completed at",curTime))
+```
+
+### Calculate Accuracy of Spruce and Fir Logisitic Models - All Vars
+
+#### Calculate Spruce and Fir Aggregated Data Logisitic Model Accuracy - All Vars
+
+Find best threshold for Spruce and Fir using all aggregated data.
+
+```{r "SprFir_Agg_All: Find best threshold for aggregated Data - all vars"}
+result = calcLogisticModelAccuracy (forestTrain$Spruce_Fir, SprFir_Agg_Train_predict, 
+                       0.0, 1, 10, "Spruce_Fir", "Other", 1,1)
+curThresh = as.numeric(result[bestThreshIndex])
+SprFir_Agg_All_threshold = curThresh
+```
+The accuracy for the best threshold on the training set for Spruce and Fir 
+using all aggregated data is shown below.
+```{r "SprFir_Agg_All: Accuracy for best threshold on training data"}
+result = calcLogisticModelAccuracy (forestTrain$Spruce_Fir, SprFir_Agg_Train_predict, 
+                       curThresh, curThresh, 1, "Spruce_Fir", "Other", 3)
+```
+The accuracy for the best threshold on the testing set for Spruce and Fir 
+using all aggregated data is shown below.
+```{r "SprFir_Agg_All: Accuracy for best threshold on test data"}
+result = calcLogisticModelAccuracy (forestTest$Spruce_Fir, SprFir_Agg_Test_predict, 
+                       curThresh, curThresh, 1, "Spruce_Fir", "Other", 3,
+                       saveFile=saveFileName, desc="Spruce/Fir All Aggregate Vars", 
+                       AIC=SprFir_Agg_All_aic, AUC=SprFir_Agg_All_ROC_AUC)
+
+  # retVal = c(modelPerformance, sensitivity,specificity) # TN, FN, FP, TP, sens, spec
+  # c(funcStat,accuracy,baseline,retVal)
+  list[RC, SprFir_Agg_All_model_acc, SprFir_Agg_All_baseline_acc, 
+      TN, FN, FP, TP, SprFir_Agg_All_sens, SprFir_Agg_All_spec] <- result
+  if (RC != "OK") {
+    print(paste("Error - terminating:",RC))
+    knitr:knit_exit()
+  }
+  SprFir_Agg_All_model_acc = as.integer(as.numeric(SprFir_Agg_All_model_acc)*1000)/10
+  SprFir_Agg_All_baseline_acc = as.integer(as.numeric(SprFir_Agg_All_baseline_acc)*1000)/10
+  SprFir_Agg_All_sens = as.integer(as.numeric(SprFir_Agg_All_sens)*1000)/10
+  SprFir_Agg_All_spec = as.integer(as.numeric(SprFir_Agg_All_spec)*1000)/10
+```
+
+#### Calculate Spruce and Fir Individuated Data Logisitic Model Accuracy - All Vars
+
+Find best threshold for Spruce and Fir using all individuated data.
+
+```{r "SprFir_Ind_All: Find best threshold for Individulized Data - all vars"}
+result = calcLogisticModelAccuracy (forestTrain$Spruce_Fir, SprFir_Ind_Train_predict, 
+                       0.0, 1, 10, "Spruce_Fir", "Other", 1,1)
+curThresh = as.numeric(result[bestThreshIndex])
+SprFir_Ind_All_threshold = curThresh
+```
+The accuracy for the best threshold on the training set for Spruce and Fir 
+using all individuated data is shown below.
+```{r "SprFir_Ind_All: Accuracy for best threshold for Individulized Data - all vars-Training data"}
+result = calcLogisticModelAccuracy (forestTrain$Spruce_Fir, SprFir_Ind_Train_predict, 
+                       curThresh, curThresh, 1, "Spruce_Fir", "Other", 3)
+```
+The accuracy for the best threshold on the testing set for Spruce and Fir 
+using all individuated data is shown below.
+```{r "SprFir_Ind_All: Accuracy for best threshold for Individulized Data - all vars-Test data"}
+result = calcLogisticModelAccuracy (forestTest$Spruce_Fir, SprFir_Ind_Test_predict, 
+                       curThresh, curThresh, 1, "Spruce_Fir", "Other", 3,
+                       saveFile=saveFileName, desc="Spruce/Fir All Individualized Vars", 
+                       AIC=SprFir_Ind_All_aic, AUC=SprFir_Ind_All_ROC_AUC)
+
+list[RC, SprFir_Ind_All_model_acc, SprFir_Ind_All_baseline_acc, 
+      TN, FN, FP, TP, SprFir_Ind_All_sens, SprFir_Ind_All_spec] <- result
+  if (RC != "OK") {
+    print(paste("Error - terminating:",RC))
+    knitr:knit_exit()
+  }
+  SprFir_Ind_All_model_acc = as.integer(as.numeric(SprFir_Ind_All_model_acc)*1000)/10
+  SprFir_Ind_All_baseline_acc = as.integer(as.numeric(SprFir_Ind_All_baseline_acc)*1000)/10
+  SprFir_Ind_All_sens = as.integer(as.numeric(SprFir_Ind_All_sens)*1000)/10
+  SprFir_Ind_All_spec = as.integer(as.numeric(SprFir_Ind_All_spec)*1000)/10
+```
+
+
+The Spruce and Fir aggregated model accuracy on the test data is 
+77.15% compared to 77.12% for the
+individuated data model, essentially identical. Both are ~ 14% better than the 
+baseline model.
+
+## Spruce and Fir Logistic Regression - Significant Variables
+
+### Create Spruce and Fir Logistic Model - Sig Vars
+
+Now create the logistic model for the Aggregated Soil data using just the significant 
+variables and compare to the previous models.
+
+#### Spruce and Fir Logistic Model using Significant Aggregated Data
+
+Variables that have been removed are commented out in the code below.
+
+```{r "SprFir_Agg_Sig: Create Logistic Model with Aggregated Soil Types using significant variables"}
+  SprFir_Agg_LogMod = 
+    glm(Spruce_Fir ~ 
+          Elev +     # Elevation in meters of cell
+          Aspect +   # Direction in degrees slope faces
+          Slope +    # Slope / steepness of hill in degrees (0 to 90)
+          H2OHD +    # Horizontal distance in meters to nearest water
+          H2OVD +    # Vertical distance in meters to nearest water
+          RoadHD +   # Horizontal distance in meters to nearest road
+          FirePtHD + # Horizontal distance in meters to nearest fire point
+          Shade9AM + Shade12PM + Shade3PM + # Amount of shade at 9am, 12pm and 3pm
+          # Wilderness areas:
+            # RWwild + NEwild + CMwild + CPwild + 
+          # Aggregated Soil type:
+            # ST01 + ST02 + ST03 + 
+            ST04 + 
+            # ST05 + ST06 + ST07 + 
+            ST08 + ST09 + ST10 + ST11 + ST12 + 
+            # ST13 + ST14 + ST15 + 
+            ST16 + ST17 + ST18 + ST19 + ST20 +
+            ST21 + ST22 + ST23 + ST24 + ST25 + ST26 + ST27 + ST28 + ST29 + ST30 +
+            ST31 + ST32 + ST33 + 
+            # ST34 + ST35 + 
+            ST36 + 
+            # ST37 + 
+            ST38 + ST39 ,
+            # + ST40 ,
+          data=forestTrain, family=binomial)
+
+  SprFir_Agg_Sig_LogMod = SprFir_Agg_LogMod
+  save("SprFir_Agg_Sig_LogMod", file="SprFir_Agg_Sig_LogMod.Rdata")
+
+  SprFir_Agg_Sig_aic<-as.integer(SprFir_Agg_LogMod$aic)
+  SprFir_Agg_Sig_aic
+  
+```
+
+Check the coefficients of the Spruce and Fir model using significant aggregated data.
+
+```{r "SprFir_Agg_Sig:Examine SprFir Agg Significant Logistic Model Output"}
+summary(SprFir_Agg_LogMod)
+```
+
+The intercept looks much more reasonable. Some soil types that were significant
+previously are no longer significant.
+
+#### Spruce and Fir Logistic Model using Significant Individuated Data
+
+Create a logistic model for the significant individuated variables.
+
+Again, the non-significant variables have been commented out.
+```{r "SprFir_Ind_Sig:Create Model with significant Individual Properties-"}
+
+  SprFir_Ind_LogMod = 
+    glm(Spruce_Fir ~ 
+          Elev +     # Elevation in meters of cell
+          Aspect +   # Direction in degrees slope faces
+          Slope +    # Slope / steepness of hill in degrees (0 to 90)
+          H2OHD +    # Horizontal distance in meters to nearest water
+          H2OVD +    # Vertical distance in meters to nearest water
+          RoadHD +   # Horizontal distance in meters to nearest road
+          FirePtHD + # Horizontal distance in meters to nearest fire point
+          Shade9AM + Shade12PM + Shade3PM + # Amount of shade at 9am, 12pm and 3pm
+          # Wilderness areas:
+            # RWwild + NEwild + CMwild + CPwild +  
+          # Climate Zone:
+          # ClimateName + 
+            # Montane_low + Montane + 
+            SubAlpine + Alpine + 
+            # Dry + Non_Dry + 
+          # Geology Zone:
+          # GeoName +  
+            Alluvium + Glacial + 
+            # Sed_mix + Ign_Meta + 
+          # Soil Family:
+            Aquolis_cmplx + 
+            # Argiborolis_Pachic + 
+            Borohemists_cmplx + Bross + 
+            Bullwark + Bullwark_Cmplx + Catamount + Catamount_cmplx + 
+            # Cathedral + Como + 
+            Cryaquepts_cmplx + Cryaquepts_Typic + Cryaquolls + 
+            Cryaquolls_cmplx + Cryaquolls_Typic + Cryaquolls_Typic_cmplx + 
+            # Cryoborolis_cmplx + 
+            Cryorthents + 
+            # Cryorthents_cmplx + Cryumbrepts + Cryumbrepts_cmplx + Gateview + 
+            # Gothic + Granile + Haploborolis + 
+            Legault + 
+            # Legault_cmplx + 
+            Leighcan + Leighcan_cmplx + Leighcan_warm + 
+            # Moran + Ratake + Ratake_cmplx + Rogert + Supervisor_Limber_cmplx + 
+            # Troutville + Unspecified + Vanet + Wetmore + 
+          # Soil Rock composition:
+            # Bouldery_ext + 
+            Rock_Land + 
+            # Rock_Land_cmplx + Rock_Outcrop + 
+            Rock_Outcrop_cmplx ,
+            # Rubbly + Stony + Stony_extreme + Stony_very + Till_Substratum ,
+          data=forestTrain, family=binomial)
+
+  SprFir_Ind_Sig_LogMod = SprFir_Ind_LogMod
+  save("SprFir_Ind_Sig_LogMod", file="SprFir_Ind_Sig_LogMod.Rdata")
+
+  SprFir_Ind_Sig_aic<-as.integer(SprFir_Ind_LogMod$aic)
+  SprFir_Ind_Sig_aic
+
+  summary(SprFir_Ind_LogMod)
+
+```
+Again the intercept looks much better. Also a few variables have become
+non-significant.
+
+### Predict Spruce and Fir Logistic Model Probabilities - Sig Vars
+
+#### Spruce and Fir Probabilities using Significant Aggregated Data
+
+Predict the probability of Spruce and Fir for aggregated Data - significant variables.
+```{r "SprFir_Agg_Sig:Predict Spruce_Fir with Agg Data - significant variables"}
+
+# Predict Spruce and Fir Agg Data - significant variables
+
+  SprFir_Agg_Train_predict= predict(SprFir_Agg_LogMod, type="response")
+  summary(SprFir_Agg_Train_predict)
+
+  SprFir_Agg_Test_predict= predict(SprFir_Agg_LogMod, type="response",newdata=forestTest)
+  summary(SprFir_Agg_Test_predict)
+```
+
+####Spruce and Fir Probabilities using Significant Individuated Data
+
+Predict the probability of Spruce_Fir using significant Individuated Data.
+```{r "SprFir_Ind_Sig: Predict Spruce and Fir Ind Data - significant variables"}
+  SprFir_Ind_Train_predict= predict(SprFir_Ind_LogMod, type="response")
+  summary(SprFir_Ind_Train_predict)
+
+  SprFir_Ind_Test_predict= predict(SprFir_Ind_LogMod, type="response",newdata=forestTest)
+  summary(SprFir_Ind_Test_predict)
+  print(paste("ROCR graph 2 completed at",curTime))
+```
+
+### Spruce and Fir Receiver Operating Characteristic (ROC) - Sig Vars
+
+Look at the True Positive and False Positive rates based on threshold value.
+
+```{r "SprFir_Agg_Sig: ROCR"}
+
+  if (calcROC) {
+    ROCpred_SprFir_Agg = prediction(SprFir_Agg_Train_predict, forestTrain$Spruce_Fir)
+    summary(ROCpred_SprFir_Agg)
+    
+    ROCperf_SprFir_Agg = performance(ROCpred_SprFir_Agg, "tpr", "fpr")
+    summary(ROCperf_SprFir_Agg)
+    
+    SprFir_Agg_Sig_ROC_AUC = as.numeric(performance(ROCpred_SprFir_Agg, "auc")@y.values)
+    SprFir_Agg_Sig_ROC_AUC=as.integer(as.numeric(SprFir_Agg_Sig_ROC_AUC)*1000)/10
+    SprFir_Agg_Sig_ROC_AUC
+    
+    jpeg(filename="Fig-ROCR_perf_SprFir_Agg_Sig.jpg")
+    plot(ROCperf_SprFir_Agg, colorize=TRUE, print.cutoffs.at=seq(0,1,0.1), text.adj=c(-0.2,1.7))
+    dev.off()
+  } else {
+    SprFir_Agg_Sig_ROC_AUC = 83.7
+  }
+```
+![Spruce and Fir ROC for Aggregated Significant Data](Fig-ROCR_perf_SprFir_Agg_Sig.jpg)
+
+
+```{r "SprFir_Ind_SIG: ROC"}
+
+  if (calcROC) {
+    curTime=Sys.time()
+    print(paste("ROCR graph 2 started at",curTime))
+
+    ROCpred_SprFir_Ind = prediction(SprFir_Ind_Train_predict, forestTrain$Spruce_Fir)
+    summary(ROCpred_SprFir_Ind)
+    
+    ROCperf_SprFir_Ind = performance(ROCpred_SprFir_Ind, "tpr", "fpr")
+    summary(ROCperf_SprFir_Ind)
+    
+    SprFir_Ind_Sig_ROC_AUC = as.numeric(performance(ROCpred_SprFir_Ind, "auc")@y.values)
+    SprFir_Ind_Sig_ROC_AUC=as.integer(as.numeric(SprFir_Ind_Sig_ROC_AUC)*1000)/10
+    SprFir_Ind_Sig_ROC_AUC
+
+    jpeg(filename="Fig-ROC_perf_SprFir_Ind_Sig.jpg")
+    plot(ROCperf_SprFir_Ind, colorize=TRUE, print.cutoffs.at=seq(0,1,0.1), text.adj=c(-0.2,1.7))
+    dev.off()
+  } else {
+    SprFir_Ind_Sig_ROC_AUC = 83.8
+  }
+```  
+
+![Spruce and Fir ROC for Individuated Significant Data](Fig-ROC_perf_SprFir_Ind_Sig.jpg)
+
+The threshold graphs are essentially identical.
+This is making me think that there is not much difference between the 
+two models.  The AIC score for the Soil Type model is AIC: 351676 and for the 
+individuated variables is: AIC: 351839. The Soil type model AIC score is 0.046% better
+than the individuated model.
+
+
+### Calculate Accuracy of Spruce and Fir Logisitic Model - Sig Vars
+
+#### Calculate Spruce and Fir Aggregated Data Logisitic Model Accuracy - Significant Vars
+
+Find best Spruce and Fir threshold for Aggregated Data using significant variables.
+
+```{r "SprFir_Agg_Sig:Find best threshold for aggregated Data - sig vars"}
+result = calcLogisticModelAccuracy (forestTrain$Spruce_Fir, SprFir_Agg_Train_predict, 
+                       0.0, 1, 10, "Spruce_Fir", "Other", 1,1)
+curThresh = as.numeric(result[bestThreshIndex])
+SprFir_Agg_Sig_threshold = curThresh
+```
+The accuracy for the best threshold on the training set for Spruce and Fir 
+using significant aggregated data is shown below.
+```{r "SprFir_Agg_Sig:Acccuracy for best threshold on training data"}
+result = calcLogisticModelAccuracy (forestTrain$Spruce_Fir, SprFir_Agg_Train_predict, 
+                       curThresh, curThresh, 1, "Spruce_Fir", "Other", 3)
+```
+The accuracy for the best threshold on the testing set for Spruce and Fir 
+using significant aggregated data is shown below.
+```{r "SprFir_Agg_Sig:Acccuracy for best threshold on testdata"}
+result = calcLogisticModelAccuracy (forestTest$Spruce_Fir, SprFir_Agg_Test_predict, 
+                       curThresh, curThresh, 1, "Spruce_Fir", "Other", 3,
+                       saveFile=saveFileName, desc="Spruce/Fir Sig Aggregate Vars", 
+                       AIC=SprFir_Agg_Sig_aic, AUC=SprFir_Agg_Sig_ROC_AUC)
+
+list[RC, SprFir_Agg_Sig_model_acc, SprFir_Agg_Sig_baseline_acc, 
+      TN, FN, FP, TP, SprFir_Agg_Sig_sens, SprFir_Agg_Sig_spec] <- result
+  if (RC != "OK") {
+    print(paste("Error - terminating:",RC))
+    knitr:knit_exit()
+  }
+  SprFir_Agg_Sig_model_acc = as.integer(as.numeric(SprFir_Agg_Sig_model_acc)*1000)/10
+  SprFir_Agg_Sig_baseline_acc = as.integer(as.numeric(SprFir_Agg_Sig_baseline_acc)*1000)/10
+  SprFir_Agg_Sig_sens = as.integer(as.numeric(SprFir_Agg_Sig_sens)*1000)/10
+  SprFir_Agg_Sig_spec = as.integer(as.numeric(SprFir_Agg_Sig_spec)*1000)/10
+```
+
+#### Calculate Spruce and Fir Individuated Data Logisitic Model Accuracy - Significant Vars
+
+Find best Spruce and Fir threshold for Inividuated Data using significant variables.
+
+```{r "SprFir_Ind_Sig:Find best threshold for Individulized Data - significant vars"}
+result = calcLogisticModelAccuracy (forestTrain$Spruce_Fir, SprFir_Ind_Train_predict, 
+                       0.0, 1, 10, "Spruce_Fir", "Other", 1,1)
+curThresh = as.numeric(result[bestThreshIndex])
+SprFir_Ind_Sig_threshold = curThresh
+```
+The accuracy for the best threshold on the training set for Spruce and Fir 
+using significant individuated data is shown below.
+```{r "SprFir_Ind_Sig: Accuracy for best threshold on training data"}
+result = calcLogisticModelAccuracy (forestTrain$Spruce_Fir, SprFir_Ind_Train_predict, 
+                       curThresh, curThresh, 1, "Spruce_Fir", "Other", 3)
+```
+The accuracy for the best threshold on the testing set for Spruce and Fir 
+using significant individuated data is shown below.
+```{r "SprFir_Ind_Sig: Accuracy for best threshold on test data"}
+result = calcLogisticModelAccuracy (forestTest$Spruce_Fir, SprFir_Ind_Test_predict, 
+                       curThresh, curThresh, 1, "Spruce_Fir", "Other", 3,
+                       saveFile=saveFileName, desc="Spruce/Fir Sig Individualized Vars", 
+                       AIC=SprFir_Ind_Sig_aic, AUC=SprFir_Ind_All_ROC_AUC)
+
+list[RC, SprFir_Ind_Sig_model_acc, SprFir_Ind_Sig_baseline_acc, 
+      TN, FN, FP, TP, SprFir_Ind_Sig_sens, SprFir_Ind_Sig_spec] <- result
+  if (RC != "OK") {
+    print(paste("Error - terminating:",RC))
+    knitr:knit_exit()
+  }
+  SprFir_Ind_Sig_model_acc = as.integer(as.numeric(SprFir_Ind_Sig_model_acc)*1000)/10
+  SprFir_Ind_Sig_baseline_acc = as.integer(as.numeric(SprFir_Ind_Sig_baseline_acc)*1000)/10
+  SprFir_Ind_Sig_sens = as.integer(as.numeric(SprFir_Ind_Sig_sens)*1000)/10
+  SprFir_Ind_Sig_spec = as.integer(as.numeric(SprFir_Ind_Sig_spec)*1000)/10
+  
+############# End End End End End End End End End End End End ##################  
+```
+The accuracy of the models is shown below:
+
+
+ Logistic Model    | Accuracy | Sens | Spec | AIC | AUC   | Threshold
+ ------------------|----------|------|------|-----|-------|-----------
+ Spruce and Fir Aggregate All Vars   |   `r SprFir_Agg_All_model_acc`% | `r SprFir_Agg_All_sens`% | `r SprFir_Agg_All_spec`% |  `r SprFir_Agg_All_aic` | `r SprFir_Agg_All_ROC_AUC`% | `r SprFir_Agg_All_threshold`
+ Spruce and Fir Individual All Vars   |   `r SprFir_Ind_All_model_acc`% | `r SprFir_Ind_All_sens`% | `r SprFir_Ind_All_spec`% |  `r SprFir_Ind_All_aic` | `r SprFir_Ind_All_ROC_AUC`% | `r SprFir_Ind_All_threshold`
+ Spruce and Fir Aggregate Sig Vars | `r SprFir_Agg_Sig_model_acc`% | `r SprFir_Agg_Sig_sens`% | `r SprFir_Agg_Sig_spec`% |  `r SprFir_Agg_Sig_aic` | `r SprFir_Agg_Sig_ROC_AUC`% | `r SprFir_Agg_Sig_threshold`
+ Spruce and Fir Individual Sig Vars |   `r SprFir_Ind_Sig_model_acc`% | `r SprFir_Ind_Sig_sens`% | `r SprFir_Ind_Sig_spec`% |  `r SprFir_Ind_Sig_aic` | `r SprFir_Ind_Sig_ROC_AUC`% | `r SprFir_Ind_Sig_threshold`
+ ------------------|----------|------|------|-----|-------
+
+There is a slight degradation in the accuracy with insignificant variables eliminated,
+but not by much.
+
+# Conclusion
+
+It is beginning to look like there is no advantage to dis-aggregating the
+Soil Type variables into their component parts. I was hoping there
+would be some improvement by allowing the individual variables to 
+be "more finely" tuned. There is probably a mathematical explanation
+that proves there is no advantage of breaking out aggregated variables.
+I have to think about that more.
+
+The logistic regression results for Spruce and Fir are 7% better than the 
+original paper this project was modeled after. 
+These tests need to be done for the remaining 6 forest cover types to see how
+regression does overall. 
+
+```{r "Script complete"}
+  curTime=Sys.time()
+  print(paste("Forest Cover Logistic script ended at",curTime))
+```

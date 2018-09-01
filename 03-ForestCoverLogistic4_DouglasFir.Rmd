@@ -1,0 +1,836 @@
+---
+title: "Capstone Data Logistic Regression - Predict Douglas Fir"
+author: "Tom Thorpe"
+date: "July 25, 2018"
+output:
+  pdf_document: default
+  word_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+#knitr::opts_chunk$set(echo = FALSE,message = FALSE)
+knitr::opts_chunk$set(echo = TRUE)
+
+#library(memisc, warn.conflicts = FALSE, quietly=TRUE)
+#suppressMessages(library(memisc, warn.conflicts = FALSE, quietly=TRUE))
+```
+
+# Objective
+
+Use Logistic regression to predict tree coverage.
+
+
+```{r}
+# Include required libraries.
+
+library(gsubfn)
+library(dplyr)
+library(ggplot2)
+library(ggridges) # for easier viewing of sub-group distributions
+library(ROCR)
+suppressMessages(library(latticeExtra, warn.conflicts = FALSE, quietly=TRUE))
+#library(latticeExtra)
+
+  curTime=Sys.time()
+  print(paste("Forest Cover Logistic script started at",curTime))
+
+#Point to data. The forestcover_clean_full.csv is the cleaned data to be graphed. 
+  
+calcROC <- 1  
+saveFileName="ForestCoverLogisticStats.csv"
+
+infile="C:/Users/Tom/git/datasciencefoundation/ForestCoverage/forestcover_clean_full.csv"
+#infile="C:/Users/Tom/git/datasciencefoundation/ForestCoverage/forestcover_clean.csv"
+#infile="C:/Users/Tom/git/datasciencefoundation/ForestCoverage/forestcoversmall_clean_full.csv"
+#infile="C:/Users/Tom/git/datasciencefoundation/ForestCoverage/forestcoversmall_clean.csv"
+out2file="C:/Users/Tom/git/datasciencefoundation/ForestCoverage/forestcover_graph.csv"
+#out1file="C:/Users/Tom/git/datasciencefoundation/ForestCoverage/forestcoversmall_clean_full.csv"
+#out2file="C:/Users/Tom/git/datasciencefoundation/ForestCoverage/forestcoversmall_clean.csv"
+
+alphaVal<-0.05 # large data
+#alphaVal<-0.1  # small data
+```
+
+
+```{r "Load Data"}
+
+forestcover <- read.csv(infile,header=TRUE,sep=",") %>% tbl_df()
+  curTime=Sys.time()
+  print(paste("Forest Cover data load completed at",curTime))
+
+forestcover$SoilType<-as.factor(forestcover$SoilType)
+forestcover$ClimateZone<-as.factor(forestcover$ClimateZone)
+forestcover$GeoZone<-as.factor(forestcover$GeoZone)
+
+# glimpse(forestcover)
+
+# table(forestcover$Sed_mix)
+#knitr::knit_exit()
+
+# Coverage binary outcome Vars:
+# Aspen
+# Cottonwood_Willow
+# DouglasFir
+# Krummholz
+# LodgepolePine
+# PonderosaPine
+# Spruce_Fir
+
+
+```
+A table showing the number of occurrences for each tree type is shown below.
+```{r}
+
+covCount<-data.frame(table(forestcover$CovName))
+totCount<-nrow(forestcover)
+covCount <- mutate(covCount,Percent = as.integer(covCount$Freq*1000/totCount)/10)
+LodgePct<-covCount$Percent[covCount$Var1=="Lodgepole"]
+SpruceAndFirPct<-covCount$Percent[covCount$Var1=="Spruce&Fir"]
+LodgeAndSpruceAndFir<-LodgePct+SpruceAndFirPct
+#```
+#```{r echo=TRUE}
+covCount
+```
+
+Lodge pole Pine represents `r LodgePct` percent of the sample.
+So always guessing "Lodge pole" would provide success rate of `r LodgePct` percent
+and can be used as a baseline for comparing our predictions. Spruce & Fir represent the next 
+largest number of trees. The two together represent `r LodgeAndSpruceAndFir` percent.
+
+# Logistic Model Accuracy Function
+
+A function to help determine threshold for best accuracy and testing is shown below.
+
+```{r "Logsitic Model Accuracy Function"}
+
+source("logisticAccuracy.R") # for function calcLogisticModelAccuracy
+#save("calcLogisticModelAccuracy", file="logisticAccuracy.Rdata")
+bestThreshIndex=11
+```
+
+# Create Training and Testing Sets
+
+Split data into training and testing data for logistic regression.
+The split is based on cover type so that the different coverage types
+will be split proportionately for all cover types in the training and test sets.
+
+```{r "DougFir: Split Data into training and test"}
+library(caTools)
+set.seed(127)
+split = sample.split(forestcover$CovType, 0.70) # we want 65% in the training set
+forestTrain = subset(forestcover, split == TRUE)
+forestTest  = subset(forestcover, split == FALSE)
+```
+Check training set coverage percentages and compare with test set to ensure
+there is a representative amount of data in each set for each coverage type.
+
+#### View Training Set Coverage Percentages
+
+Check training set coverage percentages.
+
+```{r "Calc Training Set coverages"}
+covCount<-data.frame(table(forestTrain$CovName))
+totCount<-nrow(forestTrain)
+covCount <- mutate(covCount,Percent = as.integer(covCount$Freq*1000/totCount)/10)
+covCount
+```
+
+#### View Test Set Coverage Percentages
+
+Check test set coverage percentages.
+```{r "Calc Test Set coverages"}
+covCount<-data.frame(table(forestTest$CovName))
+totCount<-nrow(forestTest)
+covCount <- mutate(covCount,Percent = as.integer(covCount$Freq*1000/totCount)/10)
+covCount
+
+# knitr::knit_exit() # exit early
+
+#glimpse(forestTrain)
+#glimpse(forestTest)
+#summary(forestTrain)
+#summary(forestTest)
+#table(forestTrain$Sed_mix)
+#table(forestTrain$GeoName)
+#table(forestTrain$Spruce_Fir)
+#table(forestTest$Spruce_Fir)
+
+# the above all work without error.
+
+#table(forestTest$Rock_Land) 
+# Get the following error with above code:
+#  Error in table(SpfFir_test$Rock_Land) : object 'SpfFir_test' not found
+#    Calls: <Anonymous> ... withCallingHandlers -> withVisible -> eval -> eval -> table
+
+
+#table(forestTrain$Rock_Land)
+#table(forestTest$Rock_Land)
+#table(forestTrain$Rubbly)
+#table(forestTest$Rubbly)
+
+#table(forestTrain$Sed_mix)
+#table(forestTrain$Gateview)
+#table(forestTrain$Rubbly)
+#table(forestTest$Sed_mix)
+#table(forestTest$Gateview)
+#table(forestTest$Rubbly)
+
+############# Start Start Start Start Start Start Start Start ##################
+```
+
+# Douglas Fir Logistic Regression
+
+Logistic regression models are created and compared for the Douglas Fir coverage type.
+The outcome is based on the binary 'DouglasFir' variable. 
+
+## Douglas Fir Logistic Regression - All Variables
+
+### Create Douglas Fir Logistic Model - All Vars
+
+Create the Douglas Fir logistic model for the Aggregated Soil data 
+using all independent variables.
+
+#### Douglas Fir All Aggregated Soil Types
+
+The original project used aggregated Soil Types. Compute a logistic
+regression model using the aggregated soil types to see how the 
+dis-aggregated / individuated variables compare.
+
+```{r "DougFir_Agg_all: Create Logistic Model with Aggregated Soil Types using all variables"}
+
+  # You can remove the levels of the factor variables using the option exclude:
+  #   lm(dependent ~ factor(independent1, exclude=c('b','d')) + independent2)
+  #   This way the factors b, d will not be included in the regression.
+
+  curTime=Sys.time()
+  print(paste("DouglasFir aggregated Logistic Model Calculation started at",curTime))
+  
+  DougFir_Agg_LogMod = 
+    glm(DouglasFir ~ 
+          Elev +     # Elevation in meters of data cell
+          Aspect +   # Direction in degrees slope faces
+          Slope +    # Slope / steepness of hill in degrees (0 to 90)
+          H2OHD +    # Horizontal distance in meters to nearest water
+          H2OVD +    # Vertical distance in meters to nearest water
+          RoadHD +   # Horizontal distance in meters to nearest road
+          FirePtHD + # Horizontal distance in meters to nearest fire point
+          Shade9AM + Shade12PM + Shade3PM + # Amount of shade at 9am, 12pm and 3pm
+          # Wilderness areas:
+            RWwild + NEwild + CMwild + CPwild + 
+          # Aggregated Soil type:
+            ST01 + ST02 + ST03 + ST04 + ST05 + ST06 + ST07 + ST08 + ST09 + ST10 +
+            ST11 + ST12 + ST13 + ST14 + ST15 + ST16 + ST17 + ST18 + ST19 + ST20 +
+            ST21 + ST22 + ST23 + ST24 + ST25 + ST26 + ST27 + ST28 + ST29 + ST30 +
+            ST31 + ST32 + ST33 + ST34 + ST35 + ST36 + ST37 + ST38 + ST39 + ST40 ,
+          data=forestTrain, family=binomial)
+  
+  # save model for later use
+  DougFir_Agg_All_LogMod = DougFir_Agg_LogMod
+  save("DougFir_Agg_All_LogMod", file="DougFir_Agg_All_LogMod.Rdata")
+ 
+  DougFir_Agg_All_aic<-as.integer(DougFir_Agg_LogMod$aic)
+  DougFir_Agg_All_aic
+  
+  curTime=Sys.time()
+  print(paste("DouglasFir aggregated Logistic Model Calculation completed at",curTime))
+```
+
+Check the coefficients for the Douglas Fir model using all aggregated data.
+
+```{r "DougFir_Agg_All: Examine Logistic Model Output"}
+summary(DougFir_Agg_LogMod)
+```
+WOW! The intercept is huge and listed as not significant. 
+Wilderness area and several soil types are not significant and can be removed in 
+the next iteration.
+
+#### Douglas Fir All Individuated Soil Types
+
+Create a logistic model using the Individuated variables that were 
+derived from the Soil Types. The Soil Type was the intersection of
+climate zone, geology zone, soil families, and rock content. These variables
+are used instead of the Soil types.
+
+```{r "DougFir_Ind_All: Create Logistic Model-Aggregated data split into Individual vars"}
+
+  curTime=Sys.time()
+  print(paste("DouglasFir Individual Logistic Model Calculation started at",curTime))
+
+  DougFir_Ind_LogMod = 
+    glm(DouglasFir ~ 
+          Elev +     # Elevation in meters of cell
+          Aspect +   # Direction in degrees slope faces
+          Slope +    # Slope / steepness of hill in degrees (0 to 90)
+          H2OHD +    # Horizontal distance in meters to nearest water
+          H2OVD +    # Vertical distance in meters to nearest water
+          RoadHD +   # Horizontal distance in meters to nearest road
+          FirePtHD + # Horizontal distance in meters to nearest fire point
+          Shade9AM + Shade12PM + Shade3PM + # Amount of shade at 9am, 12pm and 3pm
+          # Wilderness areas:
+            RWwild + NEwild + CMwild + CPwild +  
+          # Climate Zone:
+          # ClimateName + 
+            Montane_low + Montane + SubAlpine + Alpine + Dry + Non_Dry + 
+          # Geology Zone:
+          # GeoName +  
+            Alluvium + Glacial + Sed_mix + Ign_Meta + 
+          # Soil Family:
+            Aquolis_cmplx + Argiborolis_Pachic + Borohemists_cmplx + Bross + 
+            Bullwark + Bullwark_Cmplx + Catamount + Catamount_cmplx + 
+            Cathedral + Como + Cryaquepts_cmplx + Cryaquepts_Typic + Cryaquolls + 
+            Cryaquolls_cmplx + Cryaquolls_Typic + Cryaquolls_Typic_cmplx + 
+            Cryoborolis_cmplx + Cryorthents + Cryorthents_cmplx + Cryumbrepts + 
+            Cryumbrepts_cmplx + Gateview + Gothic + Granile + Haploborolis + 
+            Legault + Legault_cmplx + Leighcan + Leighcan_cmplx + Leighcan_warm + 
+            Moran + Ratake + Ratake_cmplx + Rogert + Supervisor_Limber_cmplx + 
+            Troutville + Unspecified + Vanet + Wetmore + 
+          # Soil Rock composition:
+            Bouldery_ext + Rock_Land + Rock_Land_cmplx + Rock_Outcrop + 
+            Rock_Outcrop_cmplx + Rubbly + Stony + Stony_extreme + Stony_very +
+            Till_Substratum ,
+          data=forestTrain, family=binomial)
+  
+  # save model for later use
+  DougFir_Ind_All_LogMod = DougFir_Ind_LogMod
+  save("DougFir_Ind_All_LogMod", file="DougFir_Ind_All_LogMod.Rdata")
+
+  #table(forestTrain$GeoName)
+  #table(forestTrain$Sed_mix)
+  #table(forestTrain$Gateview)
+  # above: Error in table(SpfFir_test$Gateview) : object 'SpfFir_train' not found <-------
+
+  DougFir_Ind_All_aic<-as.integer(DougFir_Ind_LogMod$aic)
+  DougFir_Ind_All_aic
+  
+  summary(DougFir_Ind_LogMod)
+  
+  curTime=Sys.time()
+  print(paste("DouglasFir Individual Logistic Model Calculation completed at",curTime))
+
+  #table(forestTest$Rock_Land) 
+  # Get the following error with above code:
+  #  Error in table(SpfFir_test$Rock_Land) : object 'SpfFir_test' not found
+  #    Calls: <Anonymous> ... withCallingHandlers -> withVisible -> eval -> eval -> table
+```
+
+### Predict Douglas Fir Logistic Model Probabilities - All Aggregated Vars
+
+#### Douglas Fir Probabilities - All Aggregated Data
+
+Predict the probability of Douglas Fir for aggregated Data - all variables.
+```{r "DougFir_Agg_All: Predict Douglas Fir Agg Data - all variables"}
+
+# Predict Douglas Fir Agg Data - all variables
+
+  DougFir_Agg_Train_predict= predict(DougFir_Agg_LogMod, type="response")
+  DougFir_Agg_Train_Logit= predict(DougFir_Agg_LogMod)
+  summary(DougFir_Agg_Train_predict)
+  str(DougFir_Agg_Train_predict)
+  #plot(table(DougFir_Agg_Train_predict))
+  #plot(table(DougFir_Agg_Train_Logit))
+  dens<-data.frame(table(DougFir_Agg_Train_predict))
+# str(dens)
+
+  DougFir_Agg_Test_predict= predict(DougFir_Agg_LogMod, type="response",newdata=forestTest)
+  summary(DougFir_Agg_Test_predict)
+   str(DougFir_Agg_Test_predict)
+```
+
+####  Douglas Fir Probabilities - All Individuated Data
+
+Predict the probability of Douglas Fir for Individual Data - all variables.
+
+```{r "DougFir_Ind_All: Predict Douglas Fir Individual Data - all variables"}
+  DougFir_Ind_Train_predict= predict(DougFir_Ind_LogMod, type="response")
+  summary(DougFir_Ind_Train_predict)
+
+  DougFir_Ind_Test_predict= predict(DougFir_Ind_LogMod, type="response",newdata=forestTest)
+  summary(DougFir_Ind_Test_predict)
+```
+
+### Douglas Fir Receiver Operating Characteristic (ROC) - All Vars
+
+#### Douglas Fir Receiver ROC - All Aggregated Data
+
+Next, look at the True Positive and False Positive rates based on threshold value
+for the aggregated data.
+
+```{r "DougFir_Agg_All: ROC"}
+
+  if (calcROC) {
+    curTime=Sys.time()
+    print(paste("ROC graph 1 started at",curTime))
+  
+    ROCpred_DougFir_Agg = prediction(DougFir_Agg_Train_predict, forestTrain$DouglasFir)
+    summary(ROCpred_DougFir_Agg)
+    ROCperf_DougFir_Agg = performance(ROCpred_DougFir_Agg, "tpr", "fpr")
+    summary(ROCperf_DougFir_Agg)
+    
+    DougFir_Agg_All_ROC_AUC = as.numeric(performance(ROCpred_DougFir_Agg, "auc")@y.values)
+    DougFir_Agg_All_ROC_AUC=as.integer(as.numeric(DougFir_Agg_All_ROC_AUC)*1000)/10
+    print(paste("DougFir_Agg_All_ROC_AUC=",DougFir_Agg_All_ROC_AUC))
+    
+    jpeg(filename="Fig-ROCR_perf_DougFir_Agg.jpg")
+    plot(ROCperf_DougFir_Agg, colorize=TRUE, print.cutoffs.at=seq(0,1,0.1), text.adj=c(-0.2,1.7))
+    dev.off()
+  } else {
+    DougFir_Agg_All_ROC_AUC = 84.2
+  }
+```
+![Douglas Fir ROC for All Aggregated Data](Fig-ROCR_perf_DougFir_Agg.jpg)
+
+#### Douglas Fir Receiver ROC - All Individuated Data
+
+The Response Operating Curve for the individuated data is shown below.
+```{r "DougFir_Ind_All: ROC"}
+
+  if (calcROC) {
+    curTime=Sys.time()
+    print(paste("ROCR graph 2 started at",curTime))
+
+    ROCpred_DougFir_Ind = prediction(DougFir_Ind_Train_predict, forestTrain$DouglasFir)
+    summary(ROCpred_DougFir_Ind)
+    ROCperf_DougFir_Ind = performance(ROCpred_DougFir_Ind, "tpr", "fpr")
+    summary(ROCperf_DougFir_Ind)
+    
+    DougFir_Ind_All_ROC_AUC = as.numeric(performance(ROCpred_DougFir_Ind, "auc")@y.values)
+    DougFir_Ind_All_ROC_AUC=as.integer(as.numeric(DougFir_Ind_All_ROC_AUC)*1000)/10
+    print(paste("DougFir_Ind_All_ROC_AUC=",DougFir_Ind_All_ROC_AUC))
+
+    jpeg(filename="Fig-ROCR_perf_DougFir_Ind.jpg")
+    plot(ROCperf_DougFir_Ind, colorize=TRUE, print.cutoffs.at=seq(0,1,0.1), text.adj=c(-0.2,1.7))
+    dev.off()
+  } else {
+    DougFir_Ind_All_ROC_AUC = 84.2
+  }
+```  
+
+![Douglas Fir ROC for All Individuated Data](Fig-ROCR_perf_DougFir_Ind.jpg)
+
+The threshold graphs are essentially identical.
+This is making me think that there is not much difference between the 
+two models.  The AIC score for the Soil Type model is AIC: 351676 and for the 
+individuated variables is: AIC: 351839. The Soil type model AIC score is 0.046% better
+than the individuated model.
+```{r "ROCR2"}
+  curTime=Sys.time()
+  print(paste("ROCR graph 2 completed at",curTime))
+```
+
+### Calculate Accuracy of Douglas Fir Logisitic Models - All Vars
+
+#### Calculate Douglas Fir Aggregated Data Logisitic Model Accuracy - All Vars
+
+Find best threshold for Douglas Fir using all aggregated data.
+
+```{r "DougFir_Agg_All: Find best threshold for aggregated Data - all vars"}
+result = calcLogisticModelAccuracy (forestTrain$DouglasFir, DougFir_Agg_Train_predict, 
+                       0.0, 1, 10, "DouglasFir", "Other", 1,1)
+curThresh = as.numeric(result[bestThreshIndex])
+DougFir_Agg_All_threshold = curThresh
+```
+The accuracy for the best threshold on the training set for Douglas Fir 
+using all aggregated data is shown below.
+```{r "DougFir_Agg_All: Accuracy for best threshold on training data"}
+result = calcLogisticModelAccuracy (forestTrain$DouglasFir, DougFir_Agg_Train_predict, 
+                       curThresh, curThresh, 1, "DouglasFir", "Other", 3)
+result = calcLogisticModelAccuracy (forestTrain$DouglasFir, DougFir_Agg_Train_predict, 
+                       0.0, 0.1, 10, "DouglasFir", "Other", 2)
+```
+The accuracy for the best threshold on the testing set for Douglas Fir 
+using all aggregated data is shown below.
+```{r "DougFir_Agg_All: Accuracy for best threshold on test data"}
+result = calcLogisticModelAccuracy (forestTest$DouglasFir, DougFir_Agg_Test_predict, 
+                       curThresh, curThresh, 1, "DouglasFir", "Other", 3,
+                       saveFile=saveFileName, desc="Douglas Fir All Aggregate Vars", 
+                       AIC=DougFir_Agg_All_aic, AUC=DougFir_Agg_All_ROC_AUC)
+```
+ 
+```{r}
+  # retVal = c(modelPerformance, sensitivity,specificity) # TN, FN, FP, TP, sens, spec
+  # c(funcStat,accuracy,baseline,retVal)
+  list[RC, DougFir_Agg_All_model_acc, DougFir_Agg_All_baseline_acc, 
+      TN, FN, FP, TP, DougFir_Agg_All_sens, DougFir_Agg_All_spec] <- result
+  if (RC != "OK") {
+    print(paste("Error - terminating:",RC))
+    knitr:knit_exit()
+  }
+  DougFir_Agg_All_model_acc = as.integer(as.numeric(DougFir_Agg_All_model_acc)*1000)/10
+  DougFir_Agg_All_baseline_acc = as.integer(as.numeric(DougFir_Agg_All_baseline_acc)*1000)/10
+  DougFir_Agg_All_sens = as.integer(as.numeric(DougFir_Agg_All_sens)*1000)/10
+  DougFir_Agg_All_spec = as.integer(as.numeric(DougFir_Agg_All_spec)*1000)/10
+```
+
+#### Calculate Douglas Fir Individuated Data Logisitic Model Accuracy - All Vars
+
+Find best threshold for Douglas Fir using all individuated data.
+
+```{r "DougFir_Ind_All: Find best threshold for Individulized Data - all vars"}
+result = calcLogisticModelAccuracy (forestTrain$DouglasFir, DougFir_Ind_Train_predict, 
+                       0.0, 1, 10, "DouglasFir", "Other", 1,1)
+curThresh = as.numeric(result[bestThreshIndex])
+DougFir_Ind_All_threshold = curThresh
+```
+The accuracy for the best threshold on the training set for Douglas Fir 
+using all individuated data is shown below.
+```{r "DougFir_Ind_All: Accuracy for best threshold for Individulized Data - all vars-Training data"}
+result = calcLogisticModelAccuracy (forestTrain$DouglasFir, DougFir_Ind_Train_predict, 
+                       curThresh, curThresh, 1, "DouglasFir", "Other", 3)
+```
+The accuracy for the best threshold on the testing set for Douglas Fir 
+using all individuated data is shown below.
+```{r "DougFir_Ind_All: Accuracy for best threshold for Individulized Data - all vars-Test data"}
+result = calcLogisticModelAccuracy (forestTest$DouglasFir, DougFir_Ind_Test_predict, 
+                       curThresh, curThresh, 1, "DouglasFir", "Other", 3,
+                       saveFile=saveFileName, desc="Douglas Fir All Individualized Vars", 
+                       AIC=DougFir_Ind_All_aic, AUC=DougFir_Ind_All_ROC_AUC)
+
+list[RC, DougFir_Ind_All_model_acc, DougFir_Ind_All_baseline_acc, 
+      TN, FN, FP, TP, DougFir_Ind_All_sens, DougFir_Ind_All_spec] <- result
+  if (RC != "OK") {
+    print(paste("Error - terminating:",RC))
+    knitr:knit_exit()
+  }
+  DougFir_Ind_All_model_acc = as.integer(as.numeric(DougFir_Ind_All_model_acc)*1000)/10
+  DougFir_Ind_All_baseline_acc = as.integer(as.numeric(DougFir_Ind_All_baseline_acc)*1000)/10
+  DougFir_Ind_All_sens = as.integer(as.numeric(DougFir_Ind_All_sens)*1000)/10
+  DougFir_Ind_All_spec = as.integer(as.numeric(DougFir_Ind_All_spec)*1000)/10
+```
+
+
+The Douglas Fir aggregated model accuracy on the test data is 
+77.15% compared to 77.12% for the
+individuated data model, essentially identical. Both are ~ 14% better than the 
+baseline model.
+
+## Douglas Fir Logistic Regression - Significant Variables
+
+### Create Douglas Fir Logistic Model - Sig Vars
+
+Now create the logistic model for the Aggregated Soil data using just the significant 
+variables and compare to the previous models.
+
+#### Douglas Fir Logistic Model using Significant Aggregated Data
+
+Variables that have been removed are commented out in the code below.
+
+```{r "DougFir_Agg_Sig: Create Logistic Model with Aggregated Soil Types using significant variables"}
+  DougFir_Agg_LogMod = 
+    glm(DouglasFir ~ 
+          Elev +     # Elevation in meters of cell
+          # Aspect +   # Direction in degrees slope faces
+          Slope +    # Slope / steepness of hill in degrees (0 to 90)
+          H2OHD +    # Horizontal distance in meters to nearest water
+          # H2OVD +    # Vertical distance in meters to nearest water
+          # RoadHD +   # Horizontal distance in meters to nearest road
+          FirePtHD + # Horizontal distance in meters to nearest fire point
+          Shade9AM + Shade12PM + Shade3PM + # Amount of shade at 9am, 12pm and 3pm
+          # Wilderness areas:
+            # RWwild + NEwild + 
+            CMwild 
+            # CPwild + 
+          # Aggregated Soil type:
+            # ST01 + ST02 + ST03 + 
+            #ST04 + 
+            # ST05 + ST06 + ST07 + 
+            #ST08 + ST09 + ST10 + ST11 + ST12 + 
+            # ST13 + ST14 + ST15 + 
+            #ST16 + ST17 + ST18 + ST19 + ST20 +
+            #ST21 + ST22 + ST23 + ST24 + ST25 + ST26 + ST27 + ST28 + ST29 + ST30 +
+            #ST31 + ST32 + ST33 + 
+            # ST34 + ST35 + 
+            #ST36 + 
+            # ST37 + 
+            #ST38 + ST39
+            # + ST40 
+            ,
+          data=forestTrain, family=binomial)
+
+  # save model for later use
+  DougFir_Agg_Sig_LogMod = DougFir_Agg_LogMod
+  save("DougFir_Agg_Sig_LogMod", file="DougFir_Agg_Sig_LogMod.Rdata")
+
+  DougFir_Agg_Sig_aic<-as.integer(DougFir_Agg_LogMod$aic)
+  DougFir_Agg_Sig_aic
+  
+```
+
+Check the coefficients of the Douglas Fir model using significant aggregated data.
+
+```{r "DougFir_Agg_Sig:Examine DougFir Agg Significant Logistic Model Output"}
+summary(DougFir_Agg_LogMod)
+```
+
+The intercept looks much more reasonable. Some soil types that were significant
+previously are no longer significant.
+
+#### Douglas Fir Logistic Model using Significant Individuated Data
+
+Create a logistic model for the significant individuated variables.
+
+Again, the non-significant variables have been commented out.
+```{r "DougFir_Ind_Sig:Create Model with significant Individual Properties-"}
+
+  DougFir_Ind_LogMod = 
+    glm(DouglasFir ~ 
+          Elev +     # Elevation in meters of cell
+          # Aspect +   # Direction in degrees slope faces
+          Slope +    # Slope / steepness of hill in degrees (0 to 90)
+          H2OHD +    # Horizontal distance in meters to nearest water
+          # H2OVD +    # Vertical distance in meters to nearest water
+          # RoadHD +   # Horizontal distance in meters to nearest road
+          FirePtHD + # Horizontal distance in meters to nearest fire point
+          Shade9AM + Shade12PM + Shade3PM + # Amount of shade at 9am, 12pm and 3pm
+          # Wilderness areas:
+            # RWwild + NEwild + 
+            # CMwild + 
+            # CPwild +  
+          # Climate Zone:
+          # ClimateName + 
+            # Montane_low + Montane + 
+            # SubAlpine + Alpine + 
+            # Dry + Non_Dry + 
+          # Geology Zone:
+          # GeoName +  
+            # Alluvium + Glacial + 
+            # Sed_mix + Ign_Meta + 
+          # Soil Family:
+            # Aquolis_cmplx + 
+            # Argiborolis_Pachic + 
+            # Borohemists_cmplx + Bross + 
+            # Bullwark + Bullwark_Cmplx + Catamount + 
+            Catamount_cmplx + 
+            # Cathedral + Como + 
+            # Cryaquepts_cmplx + Cryaquepts_Typic + Cryaquolls + 
+            # Cryaquolls_cmplx + Cryaquolls_Typic + Cryaquolls_Typic_cmplx + 
+            # Cryoborolis_cmplx + 
+            # Cryorthents + 
+            # Cryorthents_cmplx + Cryumbrepts + Cryumbrepts_cmplx + Gateview + 
+            # Gothic + Granile + 
+            Haploborolis + 
+            # Legault + 
+            # Legault_cmplx + 
+            # Leighcan + Leighcan_cmplx + Leighcan_warm + 
+            # Moran + 
+            Ratake 
+            # Ratake_cmplx + Rogert + Supervisor_Limber_cmplx + 
+            # Troutville + Unspecified + Vanet + Wetmore + 
+          # Soil Rock composition:
+            # Bouldery_ext + 
+            # Rock_Land + 
+            # Rock_Land_cmplx + Rock_Outcrop + 
+            # Rock_Outcrop_cmplx ,
+            # Rubbly + Stony + Stony_extreme + Stony_very + Till_Substratum ,
+            ,
+          data=forestTrain, family=binomial)
+
+  # save model for later use
+  DougFir_Ind_Sig_LogMod = DougFir_Ind_LogMod
+  save("DougFir_Ind_Sig_LogMod", file="DougFir_Ind_Sig_LogMod.Rdata")
+
+  DougFir_Ind_Sig_aic<-as.integer(DougFir_Ind_LogMod$aic)
+  DougFir_Ind_Sig_aic
+
+  summary(DougFir_Ind_LogMod)
+
+```
+Again the intercept looks much better. Also a few variables have become
+non-significant.
+
+### Predict Douglas Fir Logistic Model Probabilities - Sig Vars
+
+#### Douglas Fir Probabilities using Significant Aggregated Data
+
+Predict the probability of Douglas Fir for aggregated Data - significant variables.
+```{r "DougFir_Agg_Sig:Predict DouglasFir with Agg Data - significant variables"}
+
+# Predict Douglas Fir Agg Data - significant variables
+
+  DougFir_Agg_Train_predict= predict(DougFir_Agg_LogMod, type="response")
+  summary(DougFir_Agg_Train_predict)
+
+  DougFir_Agg_Test_predict= predict(DougFir_Agg_LogMod, type="response",newdata=forestTest)
+  summary(DougFir_Agg_Test_predict)
+```
+
+####Douglas Fir Probabilities using Significant Individuated Data
+
+Predict the probability of DouglasFir using significant Individuated Data.
+```{r "DougFir_Ind_Sig: Predict Douglas Fir Ind Data - significant variables"}
+  DougFir_Ind_Train_predict= predict(DougFir_Ind_LogMod, type="response")
+  summary(DougFir_Ind_Train_predict)
+
+  DougFir_Ind_Test_predict= predict(DougFir_Ind_LogMod, type="response",newdata=forestTest)
+  summary(DougFir_Ind_Test_predict)
+  print(paste("ROCR graph 2 completed at",curTime))
+```
+
+### Douglas Fir Receiver Operating Characteristic (ROC) - Sig Vars
+
+Look at the True Positive and False Positive rates based on threshold value.
+
+```{r "DougFir_Agg_Sig: ROCR"}
+
+  if (calcROC) {
+    ROCpred_DougFir_Agg = prediction(DougFir_Agg_Train_predict, forestTrain$DouglasFir)
+    summary(ROCpred_DougFir_Agg)
+    
+    ROCperf_DougFir_Agg = performance(ROCpred_DougFir_Agg, "tpr", "fpr")
+    summary(ROCperf_DougFir_Agg)
+    
+    DougFir_Agg_Sig_ROC_AUC = as.numeric(performance(ROCpred_DougFir_Agg, "auc")@y.values)
+    DougFir_Agg_Sig_ROC_AUC=as.integer(as.numeric(DougFir_Agg_Sig_ROC_AUC)*1000)/10
+    DougFir_Agg_Sig_ROC_AUC
+    
+    jpeg(filename="Fig-ROCR_perf_DougFir_Agg_Sig.jpg")
+    plot(ROCperf_DougFir_Agg, colorize=TRUE, print.cutoffs.at=seq(0,1,0.1), text.adj=c(-0.2,1.7))
+    dev.off()
+  } else {
+    DougFir_Agg_Sig_ROC_AUC = 83.7
+  }
+```
+![Douglas Fir ROC for Aggregated Significant Data](Fig-ROCR_perf_DougFir_Agg_Sig.jpg)
+
+
+```{r "DougFir_Ind_SIG: ROC"}
+
+  if (calcROC) {
+    curTime=Sys.time()
+    print(paste("ROCR graph 2 started at",curTime))
+
+    ROCpred_DougFir_Ind = prediction(DougFir_Ind_Train_predict, forestTrain$DouglasFir)
+    summary(ROCpred_DougFir_Ind)
+    
+    ROCperf_DougFir_Ind = performance(ROCpred_DougFir_Ind, "tpr", "fpr")
+    summary(ROCperf_DougFir_Ind)
+    
+    DougFir_Ind_Sig_ROC_AUC = as.numeric(performance(ROCpred_DougFir_Ind, "auc")@y.values)
+    DougFir_Ind_Sig_ROC_AUC=as.integer(as.numeric(DougFir_Ind_Sig_ROC_AUC)*1000)/10
+    DougFir_Ind_Sig_ROC_AUC
+
+    jpeg(filename="Fig-ROC_perf_DougFir_Ind_Sig.jpg")
+    plot(ROCperf_DougFir_Ind, colorize=TRUE, print.cutoffs.at=seq(0,1,0.1), text.adj=c(-0.2,1.7))
+    dev.off()
+  } else {
+    DougFir_Ind_Sig_ROC_AUC = 83.8
+  }
+```  
+
+![Douglas Fir ROC for Individuated Significant Data](Fig-ROC_perf_DougFir_Ind_Sig.jpg)
+
+The threshold graphs are essentially identical.
+This is making me think that there is not much difference between the 
+two models.  The AIC score for the Soil Type model is AIC: 351676 and for the 
+individuated variables is: AIC: 351839. The Soil type model AIC score is 0.046% better
+than the individuated model.
+
+
+### Calculate Accuracy of Douglas Fir Logisitic Model - Sig Vars
+
+#### Calculate Douglas Fir Aggregated Data Logisitic Model Accuracy - Significant Vars
+
+Find best Douglas Fir threshold for Aggregated Data using significant variables.
+
+```{r "DougFir_Agg_Sig:Find best threshold for aggregated Data - sig vars"}
+result = calcLogisticModelAccuracy (forestTrain$DouglasFir, DougFir_Agg_Train_predict, 
+                       0.0, 1, 10, "DouglasFir", "Other", 1,1)
+curThresh = as.numeric(result[bestThreshIndex])
+DougFir_Agg_Sig_threshold = curThresh
+```
+The accuracy for the best threshold on the training set for Douglas Fir 
+using significant aggregated data is shown below.
+```{r "DougFir_Agg_Sig:Acccuracy for best threshold on training data"}
+result = calcLogisticModelAccuracy (forestTrain$DouglasFir, DougFir_Agg_Train_predict, 
+                       curThresh, curThresh, 1, "DouglasFir", "Other", 3)
+```
+The accuracy for the best threshold on the testing set for Douglas Fir 
+using significant aggregated data is shown below.
+```{r "DougFir_Agg_Sig:Acccuracy for best threshold on testdata"}
+result = calcLogisticModelAccuracy (forestTest$DouglasFir, DougFir_Agg_Test_predict, 
+                       curThresh, curThresh, 1, "DouglasFir", "Other", 3,
+                       saveFile=saveFileName, desc="Douglas Fir Sig Aggregate Vars", 
+                       AIC=DougFir_Agg_Sig_aic, AUC=DougFir_Agg_Sig_ROC_AUC)
+
+list[RC, DougFir_Agg_Sig_model_acc, DougFir_Agg_Sig_baseline_acc, 
+      TN, FN, FP, TP, DougFir_Agg_Sig_sens, DougFir_Agg_Sig_spec] <- result
+  if (RC != "OK") {
+    print(paste("Error - terminating:",RC))
+    knitr:knit_exit()
+  }
+  DougFir_Agg_Sig_model_acc = as.integer(as.numeric(DougFir_Agg_Sig_model_acc)*1000)/10
+  DougFir_Agg_Sig_baseline_acc = as.integer(as.numeric(DougFir_Agg_Sig_baseline_acc)*1000)/10
+  DougFir_Agg_Sig_sens = as.integer(as.numeric(DougFir_Agg_Sig_sens)*1000)/10
+  DougFir_Agg_Sig_spec = as.integer(as.numeric(DougFir_Agg_Sig_spec)*1000)/10
+```
+
+#### Calculate Douglas Fir Individuated Data Logisitic Model Accuracy - Significant Vars
+
+Find best Douglas Fir threshold for Inividuated Data using significant variables.
+
+```{r "DougFir_Ind_Sig:Find best threshold for Individulized Data - significant vars"}
+result = calcLogisticModelAccuracy (forestTrain$DouglasFir, DougFir_Ind_Train_predict, 
+                       0.0, 1, 10, "DouglasFir", "Other", 1,1)
+curThresh = as.numeric(result[bestThreshIndex])
+DougFir_Ind_Sig_threshold = curThresh
+```
+The accuracy for the best threshold on the training set for Douglas Fir 
+using significant individuated data is shown below.
+```{r "DougFir_Ind_Sig: Accuracy for best threshold on training data"}
+result = calcLogisticModelAccuracy (forestTrain$DouglasFir, DougFir_Ind_Train_predict, 
+                       curThresh, curThresh, 1, "DouglasFir", "Other", 3)
+```
+The accuracy for the best threshold on the testing set for Douglas Fir 
+using significant individuated data is shown below.
+```{r "DougFir_Ind_Sig: Accuracy for best threshold on test data"}
+result = calcLogisticModelAccuracy (forestTest$DouglasFir, DougFir_Ind_Test_predict, 
+                       curThresh, curThresh, 1, "DouglasFir", "Other", 3,
+                       saveFile=saveFileName, desc="Douglas Fir Sig Individualized Vars", 
+                       AIC=DougFir_Ind_Sig_aic, AUC=DougFir_Ind_Sig_ROC_AUC)
+
+
+list[RC, DougFir_Ind_Sig_model_acc, DougFir_Ind_Sig_baseline_acc, 
+      TN, FN, FP, TP, DougFir_Ind_Sig_sens, DougFir_Ind_Sig_spec] <- result
+  if (RC != "OK") {
+    print(paste("Error - terminating:",RC))
+    knitr:knit_exit()
+  }
+  DougFir_Ind_Sig_model_acc = as.integer(as.numeric(DougFir_Ind_Sig_model_acc)*1000)/10
+  DougFir_Ind_Sig_baseline_acc = as.integer(as.numeric(DougFir_Ind_Sig_baseline_acc)*1000)/10
+  DougFir_Ind_Sig_sens = as.integer(as.numeric(DougFir_Ind_Sig_sens)*1000)/10
+  DougFir_Ind_Sig_spec = as.integer(as.numeric(DougFir_Ind_Sig_spec)*1000)/10
+  
+############# End End End End End End End End End End End End ##################  
+```
+The accuracy of the models is shown below:
+
+
+ Logistic Model    | Accuracy | Sens | Spec | AIC | AUC   | Threshold
+ ------------------|----------|------|------|-----|-------|----------
+ Douglas Fir Aggregate All Vars   |   `r DougFir_Agg_All_model_acc`% | `r DougFir_Agg_All_sens`% | `r DougFir_Agg_All_spec`% |  `r DougFir_Agg_All_aic` | `r DougFir_Agg_All_ROC_AUC`% | `r DougFir_Agg_All_threshold`
+ Douglas Fir Individual All Vars   |   `r DougFir_Ind_All_model_acc`% | `r DougFir_Ind_All_sens`% | `r DougFir_Ind_All_spec`% |  `r DougFir_Ind_All_aic` | `r DougFir_Ind_All_ROC_AUC`% | `r DougFir_Ind_All_threshold`
+ Douglas Fir Aggregate Sig Vars | `r DougFir_Agg_Sig_model_acc`% | `r DougFir_Agg_Sig_sens`% | `r DougFir_Agg_Sig_spec`% |  `r DougFir_Agg_Sig_aic` | `r DougFir_Agg_Sig_ROC_AUC`% | `r DougFir_Agg_Sig_threshold`
+ Douglas Fir Individual Sig Vars |   `r DougFir_Ind_Sig_model_acc`% | `r DougFir_Ind_Sig_sens`% | `r DougFir_Ind_Sig_spec`% |  `r DougFir_Ind_Sig_aic` | `r DougFir_Ind_Sig_ROC_AUC`% | `r DougFir_Ind_Sig_threshold`
+ ------------------|----------|------|------|-----|-------|-------
+
+There is a slight degradation in the accuracy with insignificant variables eliminated,
+but not by much.
+
+# Conclusion
+
+It is beginning to look like there is no advantage to dis-aggregating the
+Soil Type variables into their component parts. I was hoping there
+would be some improvement by allowing the individual variables to 
+be "more finely" tuned. There is probably a mathematical explanation
+that proves there is no advantage of breaking out aggregated variables.
+I have to think about that more.
+
+The logistic regression results for Douglas Fir are 7% better than the 
+original paper this project was modeled after. 
+These tests need to be done for the remaining 6 forest cover types to see how
+regression does overall. 
+
+```{r "Script complete"}
+  curTime=Sys.time()
+  print(paste("Forest Cover Logistic script ended at",curTime))
+```
