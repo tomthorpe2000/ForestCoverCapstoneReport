@@ -1,5 +1,5 @@
 ---
-title: "Forest Cover Capstone Report"
+title: "Forest Cover Prediction Using Logistic Regression"
 author: "Tom Thorpe"
 date: "August 29, 2018"
 output:
